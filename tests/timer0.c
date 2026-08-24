@@ -20,7 +20,8 @@
 /* TODO: insert other definitions and declarations here. */
 
 /*
- * @brief   Application entry point.
+ * @brief Callback function for CTIMER0 interrupt.
+ * Printf the number of times the interrupt has been called.
  */
 
 void CTIMER0_Callback(uint32_t flags){
