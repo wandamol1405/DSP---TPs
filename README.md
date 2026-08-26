@@ -1,5 +1,5 @@
 # Procesamiento Digital de Señales (DSP)
-Este repositorio contiene los trabajos prácticos de la materia Sistemas de Computación, realizados como parte de la cursada de la carrera de Ingeniería en Computación.
+Este repositorio contiene los trabajos prácticos de la materia Procesamiento Digital de Señales, realizados como parte de la cursada de la carrera de Ingeniería en Computación.
 
 ## Contenido
 Cada carpeta corresponde a un trabajo practico (TP) de la materia:
