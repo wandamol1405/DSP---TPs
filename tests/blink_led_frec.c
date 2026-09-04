@@ -26,8 +26,7 @@
 /* Match values de CTIMER0_MATCH_0_CHANNEL para las 4 frecuencias de
  * blinkeo. Cada uno es la mitad del anterior (doble frecuencia). Ajustar
  * segun el clock real de CTIMER0 configurado en Peripherals Tool. */
-static const uint32_t FREC_MATCH_VALUES[4] = {249999u, 124999u, 62499u,
-                                               31249u};
+static const uint32_t FREC_MATCH_VALUES[4] = {249999u, 124999u, 62499u, 31249u};
 static volatile uint8_t frec_index = 0;
 
 static const ctimer_match_config_t CTIMER0_matchConfig = {
@@ -120,8 +119,7 @@ void GPIO0_INT_0_IRQHANDLER(void) {
   ctimer_match_config_t new_config = CTIMER0_matchConfig;
   new_config.matchValue = FREC_MATCH_VALUES[frec_index];
 
-  CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL,
-                    &new_config);
+  CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &new_config);
 
   PRINTF("Frecuencia cambiada a indice %u (match=%u)\r\n", frec_index,
          FREC_MATCH_VALUES[frec_index]);
@@ -145,6 +143,8 @@ void GPIO0_INT_1_IRQHANDLER(void) {
   /* Place your interrupt code here */
   /* Cada pulsacion del boton avanza al siguiente color del LED RGB */
   color_index = (color_index + 1U) % 3U;
+
+  PRINTF("Color cambiado a indice %u\r\n", color_index);
 
   /* Clear pin flags 1 */
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags1, 1U);
