@@ -33,6 +33,7 @@ static sample_rate_t current_sample_rate = SAMPLE_RATE_8K;
 
 static volatile bool is_conversion_running = false; // flag para la IRQ del ADC
 static volatile bool adc_print_flag = false; // flag para imprimir estado del ADC
+static volatile bool is_wanda_loca = true;
 
 /**
  * 8 kHz  → R
