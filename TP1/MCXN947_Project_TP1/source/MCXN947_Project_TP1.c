@@ -11,6 +11,7 @@
  */
 #include "board.h"
 #include "clock_config.h"
+#include "fsl_ctimer.h"
 #include "fsl_debug_console.h"
 #include "peripherals.h"
 #include "pin_mux.h"
@@ -20,6 +21,11 @@
 
 /* TODO: insert other definitions and declarations here. */
 
+// Aliases for the CTIMER0 peripheral used to generate the ADC sample-rate tick
+#define CTIMER0_PERIPHERAL CTIMER0
+#define CTIMER0_MATCH_0_CHANNEL kCTIMER_Match_0
+
+// Definition of the sample rates
 typedef enum {
   SAMPLE_RATE_8K = 0,
   SAMPLE_RATE_16K,
@@ -27,6 +33,15 @@ typedef enum {
   SAMPLE_RATE_44K,
   SAMPLE_RATE_48K
 } sample_rate_t;
+
+// CTIMER configuration
+static const ctimer_match_config_t CTIMER0_matchConfig = {
+    .matchValue = 249999,
+    .enableCounterReset = true,
+    .enableCounterStop = false,
+    .outControl = kCTIMER_Output_NoAction,
+    .outPinInitState = false,
+    .enableInterrupt = true};
 
 static sample_rate_t current_sample_rate = SAMPLE_RATE_8K;
 
@@ -86,12 +101,51 @@ void SetLedForSampleRate(sample_rate_t rate) {
 }
 
 /**
+ * @brief Set the sample rate for the timer.
+ * @param rate The sample rate to set.
+ */
+void Timer_SetSampleRate(sample_rate_t rate) {
+  uint32_t match_value = 0;
+
+  switch (rate) {
+  case SAMPLE_RATE_8K:
+    match_value = 249999; // 8 kHz
+    break;
+  case SAMPLE_RATE_16K:
+    match_value = 124999; // 16 kHz
+    break;
+  case SAMPLE_RATE_22K:
+    match_value = 90908; // 22 kHz
+    break;
+  case SAMPLE_RATE_44K:
+    match_value = 45454; // 44 kHz
+    break;
+  case SAMPLE_RATE_48K:
+    match_value = 41666; // 48 kHz
+    break;
+  }
+
+  ctimer_match_config_t new_config = CTIMER0_matchConfig;
+  new_config.matchValue = match_value;
+
+  CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &new_config);
+
+  PRINTF("[INFO] Sample rate set to %d Hz\r\n",
+         (rate == SAMPLE_RATE_8K)    ? 8000
+         : (rate == SAMPLE_RATE_16K) ? 16000
+         : (rate == SAMPLE_RATE_22K) ? 22000
+         : (rate == SAMPLE_RATE_44K) ? 44000
+         : (rate == SAMPLE_RATE_48K) ? 48000
+                                     : 0);
+}
+
+/**
  * @brief Apply a sample rate.
  * @param rate The sample rate to apply.
  */
 void ApplySampleRate(sample_rate_t rate) {
   SetLedForSampleRate(rate);
-  //    Timer_SetSampleRate(rate);
+  Timer_SetSampleRate(rate);
 }
 
 void NextSampleRate(void) {
@@ -142,6 +196,7 @@ int main(void) {
 
 /**
  * @brief   GPIO00_IRQn interrupt handler.
+ * @details This function changes the sample rate to the next one in the list.
  */
 void GPIO0_INT_0_IRQHANDLER(void) {
   /* Get pin flags 0 */
@@ -165,6 +220,7 @@ void GPIO0_INT_0_IRQHANDLER(void) {
 
 /**
  * @brief   GPIO01_IRQn interrupt handler.
+ * @details This function toggles the conversion running state.
  */
 void GPIO0_INT_1_IRQHANDLER(void) {
   /* Get pin flags 1 */
