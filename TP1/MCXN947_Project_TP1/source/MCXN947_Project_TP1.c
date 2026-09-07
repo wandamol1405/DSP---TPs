@@ -11,7 +11,6 @@
  */
 #include "board.h"
 #include "clock_config.h"
-#include "fsl_ctimer.h"
 #include "fsl_debug_console.h"
 #include "peripherals.h"
 #include "pin_mux.h"
@@ -20,10 +19,6 @@
 /* TODO: insert other include files here. */
 
 /* TODO: insert other definitions and declarations here. */
-
-// Aliases for the CTIMER0 peripheral used to generate the ADC sample-rate tick
-#define CTIMER0_PERIPHERAL CTIMER0
-#define CTIMER0_MATCH_0_CHANNEL kCTIMER_Match_0
 
 // Definition of the sample rates
 typedef enum {
@@ -36,18 +31,21 @@ typedef enum {
 
 // CTIMER configuration
 static const ctimer_match_config_t CTIMER0_matchConfig = {
-    .matchValue = 249999,
+    .matchValue = 18749,
     .enableCounterReset = true,
     .enableCounterStop = false,
     .outControl = kCTIMER_Output_NoAction,
     .outPinInitState = false,
-    .enableInterrupt = true};
+    .enableInterrupt = false
+};
 
 static sample_rate_t current_sample_rate = SAMPLE_RATE_8K;
+static lpadc_conv_result_t result;
 
 static volatile bool is_conversion_running = false; // flag para la IRQ del ADC
-static volatile bool adc_print_flag =
-    false; // flag para imprimir estado del ADC
+static volatile bool adc_print_flag = false; // flag para imprimir estado del ADC
+static volatile bool freq_print_flag = false;		// flag para imprimir la frecuencia actual
+static volatile bool adc_data_ready = false;
 
 /**
  * 8 kHz  → R (Rojo)
@@ -109,19 +107,19 @@ void Timer_SetSampleRate(sample_rate_t rate) {
 
   switch (rate) {
   case SAMPLE_RATE_8K:
-    match_value = 249999; // 8 kHz
+    match_value = 18749; // 8 kHz
     break;
   case SAMPLE_RATE_16K:
-    match_value = 124999; // 16 kHz
+    match_value = 9374; // 16 kHz
     break;
   case SAMPLE_RATE_22K:
-    match_value = 90908; // 22 kHz
+    match_value = 6817; // 22 kHz
     break;
   case SAMPLE_RATE_44K:
-    match_value = 45454; // 44 kHz
+    match_value = 3408; // 44 kHz
     break;
   case SAMPLE_RATE_48K:
-    match_value = 41666; // 48 kHz
+    match_value = 3124; // 48 kHz
     break;
   }
 
@@ -130,13 +128,7 @@ void Timer_SetSampleRate(sample_rate_t rate) {
 
   CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &new_config);
 
-  PRINTF("[INFO] Sample rate set to %d Hz\r\n",
-         (rate == SAMPLE_RATE_8K)    ? 8000
-         : (rate == SAMPLE_RATE_16K) ? 16000
-         : (rate == SAMPLE_RATE_22K) ? 22000
-         : (rate == SAMPLE_RATE_44K) ? 44000
-         : (rate == SAMPLE_RATE_48K) ? 48000
-                                     : 0);
+  freq_print_flag = true;
 }
 
 /**
@@ -175,10 +167,10 @@ int main(void) {
   PRINTF("Hello TP1\r\n");
   //    PRINTF("Initial sample rate: %d\r\n", current_sample_rate);
   ApplySampleRate(current_sample_rate);
-  /* Force the counter to be placed into memory. */
-  volatile static int i = 0;
+
   /* Enter an infinite loop, just incrementing a counter. */
   while (1) {
+
     if (adc_print_flag) {
       if (is_conversion_running)
         PRINTF("[RUN]: adquisición activada\r\n");
@@ -186,10 +178,23 @@ int main(void) {
         PRINTF("[STOP]: adquisición desactivada\r\n");
       adc_print_flag = false;
     }
-    i++;
-    /* 'Dummy' NOP to allow source level single stepping of
-        tight while() loop */
-    __asm volatile("nop");
+
+    if (freq_print_flag){
+    	PRINTF("[INFO] Sample rate set to %d Hz\r\n",
+    	         (current_sample_rate == SAMPLE_RATE_8K)    ? 8000
+    	         : (current_sample_rate == SAMPLE_RATE_16K) ? 16000
+    	         : (current_sample_rate == SAMPLE_RATE_22K) ? 22000
+    	         : (current_sample_rate == SAMPLE_RATE_44K) ? 44000
+    	         : (current_sample_rate == SAMPLE_RATE_48K) ? 48000
+				 : 0);
+    	freq_print_flag = false;
+    }
+
+    if (adc_data_ready){
+		PRINTF("[ADC] Conversion: %u\r\n", result.convValue);
+		adc_data_ready = false;
+	}
+
   }
   return 0;
 }
@@ -241,4 +246,30 @@ void GPIO0_INT_1_IRQHANDLER(void) {
 #if defined __CORTEX_M && (__CORTEX_M == 4U)
   __DSB();
 #endif
+}
+
+/* ADC1_IRQn interrupt handler */
+void ADC1_IRQHANDLER(void) {
+  uint32_t trigger_status_flag;
+  uint32_t status_flag;
+  /* Trigger interrupt flags */
+  trigger_status_flag = LPADC_GetTriggerStatusFlags(ADC1_PERIPHERAL);
+  /* Interrupt flags */
+  status_flag = LPADC_GetStatusFlags(ADC1_PERIPHERAL);
+  /* Clears trigger interrupt flags */
+  LPADC_ClearTriggerStatusFlags(ADC1_PERIPHERAL, trigger_status_flag);
+  /* Clears interrupt flags */
+  LPADC_ClearStatusFlags(ADC1_PERIPHERAL, status_flag);
+
+  /* Place your code here */
+  if (is_conversion_running){
+	  LPADC_GetConvResult(ADC1, &result, 0U);
+	  adc_data_ready = true;
+  }
+
+  /* Add for ARM errata 838869, affects Cortex-M4, Cortex-M4F
+     Store immediate overlapping exception return operation might vector to incorrect interrupt. */
+  #if defined __CORTEX_M && (__CORTEX_M == 4U)
+    __DSB();
+  #endif
 }
