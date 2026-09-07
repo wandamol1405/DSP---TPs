@@ -1,0 +1,10 @@
+# Build artifacts
+Debug/
+Release/
+
+# Eclipse / MCUXpresso workspace metadata
+.metadata/
+
+# OS files
+.DS_Store
+Thumbs.db
