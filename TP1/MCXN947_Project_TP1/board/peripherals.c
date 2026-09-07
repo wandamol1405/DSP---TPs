@@ -72,6 +72,7 @@ instance:
     - interrupt_table:
       - 0: []
       - 1: []
+      - 2: []
     - interrupts: []
  * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS **********/
 /* clang-format on */
@@ -128,12 +129,247 @@ static void GPIO0_init(void) {
 }
 
 /***********************************************************************************************************************
+ * VREF0 initialization code
+ **********************************************************************************************************************/
+/* clang-format off */
+/* TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+instance:
+- name: 'VREF0'
+- type: 'vref_1'
+- mode: 'general'
+- custom_name_enabled: 'false'
+- type_id: 'vref_1_2.4.0'
+- functional_group: 'BOARD_InitPeripherals'
+- peripheral: 'VREF0'
+- config_sets:
+  - fsl_vref:
+    - vref_config:
+      - bufferMode: 'kVREF_ModeHighPowerBuffer'
+      - enableLowPowerBuff: 'true'
+      - enableInternalVoltageRegulator: 'true'
+      - enableChopOscillator: 'true'
+      - enableHCBandgap: 'true'
+      - enableCurvatureCompensation: 'true'
+      - initTrim: 'false'
+    - quick_selection: 'default'
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS **********/
+/* clang-format on */
+const vref_config_t VREF0_config = {
+  .bufferMode = kVREF_ModeHighPowerBuffer,
+  .enableLowPowerBuff = true,
+  .enableInternalVoltageRegulator = true,
+  .enableChopOscillator = true,
+  .enableHCBandgap = true,
+  .enableCurvatureCompensation = true
+};
+
+static void VREF0_init(void) {
+  /* Power up analog module in SPC */
+  SPC_EnableActiveModeAnalogModules(SPC0, kSPC_controlVref);
+  /* VREF0 peripheral initialization */
+  VREF_Init(VREF0_PERIPHERAL, &VREF0_config);
+}
+
+/***********************************************************************************************************************
+ * ADC1 initialization code
+ **********************************************************************************************************************/
+/* clang-format off */
+/* TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+instance:
+- name: 'ADC1'
+- type: 'lpadc'
+- mode: 'LPADC'
+- custom_name_enabled: 'false'
+- type_id: 'lpadc_2.8.1'
+- functional_group: 'BOARD_InitPeripherals'
+- peripheral: 'ADC1'
+- config_sets:
+  - fsl_lpadc:
+    - lpadcConfig:
+      - clockSource: 'AsynchronousFunctionClock'
+      - clockSourceFreq: 'ClocksTool_DefaultInit'
+      - enableInDozeMode: 'true'
+      - conversionAverageMode: 'kLPADC_ConversionAverage1'
+      - offsetCalibration: 'no'
+      - autoCalibrate: 'false'
+      - enableAnalogPreliminary: 'false'
+      - powerUpDelay: '0x80'
+      - referenceVoltageSource: 'kLPADC_ReferenceVoltageAlt1'
+      - powerLevelMode: 'kLPADC_PowerLevelAlt1'
+      - triggerPriorityPolicy: 'kLPADC_ConvPreemptImmediatelyNotAutoResumed'
+      - enableConvPause: 'false'
+      - convPauseDelay: '0'
+      - FIFO0Watermark: '0'
+      - FIFO1Watermark: '0'
+      - FIFO0WatermarkDMA: 'false'
+      - FIFO1WatermarkDMA: 'false'
+    - lpadcConvCommandConfig:
+      - 0:
+        - user_commandId: ''
+        - commandId: '1'
+        - chainedNextCommandNumber: '0'
+        - sampleChannelMode: 'kLPADC_SampleChannelSingleEndSideA'
+        - channelNumber: 'A.23'
+        - enableChannelB_b: 'false'
+        - channelBNumber: 'B.0'
+        - enableAutoChannelIncrement: 'false'
+        - loopCount: '0'
+        - hardwareAverageMode: 'kLPADC_HardwareAverageCount1'
+        - sampleTimeMode: 'kLPADC_SampleTimeADCK3'
+        - hardwareCompareMode: 'kLPADC_HardwareCompareDisabled'
+        - hardwareCompareValueHigh: '0'
+        - hardwareCompareValueLow: '0'
+        - conversionResoultuionMode: 'kLPADC_ConversionResolutionHigh'
+        - enableWaitTrigger: 'false'
+    - lpadcConvTriggerConfig:
+      - 0:
+        - user_triggerId: ''
+        - triggerId: '0'
+        - targetCommandId: '1'
+        - delayPower: '0'
+        - priority: 'false'
+        - channelAFIFOSelect: '0'
+        - channelBFIFOSelect: '0'
+        - enableHardwareTrigger: 'true'
+    - IRQ_cfg:
+      - interrupt_type: 'kLPADC_Trigger0CompletionInterruptEnable'
+      - enable_irq: 'true'
+      - adc_interrupt:
+        - IRQn: 'ADC1_IRQn'
+        - enable_interrrupt: 'enabled'
+        - enable_priority: 'false'
+        - priority: '0'
+        - enable_custom_name: 'false'
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS **********/
+/* clang-format on */
+const lpadc_config_t ADC1_config = {
+  .enableInDozeMode = true,
+  .conversionAverageMode = kLPADC_ConversionAverage1,
+  .enableAnalogPreliminary = false,
+  .powerUpDelay = 0x80UL,
+  .referenceVoltageSource = kLPADC_ReferenceVoltageAlt1,
+  .powerLevelMode = kLPADC_PowerLevelAlt1,
+  .triggerPriorityPolicy = kLPADC_ConvPreemptImmediatelyNotAutoResumed,
+  .enableConvPause = false,
+  .convPauseDelay = 0UL,
+  .FIFO0Watermark = 0UL,
+  .FIFO1Watermark = 0UL
+};
+lpadc_conv_command_config_t ADC1_commandsConfig[1] = {
+  {
+    .sampleChannelMode = kLPADC_SampleChannelSingleEndSideA,
+    .channelNumber = 23U,
+    .channelBNumber = 0U,
+    .chainedNextCommandNumber = 0,
+    .enableChannelB = false,
+    .enableAutoChannelIncrement = false,
+    .loopCount = 0UL,
+    .hardwareAverageMode = kLPADC_HardwareAverageCount1,
+    .sampleTimeMode = kLPADC_SampleTimeADCK3,
+    .hardwareCompareMode = kLPADC_HardwareCompareDisabled,
+    .hardwareCompareValueHigh = 0UL,
+    .hardwareCompareValueLow = 0UL,
+    .conversionResolutionMode = kLPADC_ConversionResolutionHigh,
+    .enableWaitTrigger = false
+  }
+};
+lpadc_conv_trigger_config_t ADC1_triggersConfig[1] = {
+  {
+    .targetCommandId = 1,
+    .delayPower = 0UL,
+    .channelAFIFOSelect = 0,
+    .channelBFIFOSelect = 0,
+    .priority = 1,
+    .enableHardwareTrigger = true
+  }
+};
+
+static void ADC1_init(void) {
+  /* Initialize LPADC converter */
+  LPADC_Init(ADC1_PERIPHERAL, &ADC1_config);
+  /* Configure conversion command 1. */
+  LPADC_SetConvCommandConfig(ADC1_PERIPHERAL, 1, &ADC1_commandsConfig[0]);
+  /* Configure trigger 0. */
+  LPADC_SetConvTriggerConfig(ADC1_PERIPHERAL, 0, &ADC1_triggersConfig[0]);
+  /* Enable interrupts from LPADC */
+  LPADC_EnableInterrupts(ADC1_PERIPHERAL, (kLPADC_Trigger0CompletionInterruptEnable));
+  /* Enable interrupt ADC1_IRQN request in the NVIC */
+  EnableIRQ(ADC1_IRQN);
+}
+
+/***********************************************************************************************************************
+ * CTIMER0 initialization code
+ **********************************************************************************************************************/
+/* clang-format off */
+/* TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+instance:
+- name: 'CTIMER0'
+- type: 'ctimer'
+- mode: 'Capture_Match'
+- custom_name_enabled: 'false'
+- type_id: 'ctimer_2.2.2'
+- functional_group: 'BOARD_InitPeripherals'
+- peripheral: 'CTIMER0'
+- config_sets:
+  - fsl_ctimer:
+    - ctimerConfig:
+      - mode: 'kCTIMER_TimerMode'
+      - clockSource: 'FunctionClock'
+      - clockSourceFreq: 'BOARD_BootClockPLL150M'
+      - timerPrescaler: '1'
+    - EnableTimerInInit: 'true'
+    - matchChannels:
+      - 0:
+        - matchChannelPrefixId: 'Match_0'
+        - matchChannel: 'kCTIMER_Match_3'
+        - matchValueStr: '8 kHz'
+        - enableCounterReset: 'true'
+        - enableCounterStop: 'false'
+        - outControl: 'kCTIMER_Output_Toggle'
+        - outPinInitValue: 'low'
+        - enableInterrupt: 'false'
+    - captureChannels: []
+    - interruptCallbackConfig:
+      - interrupt:
+        - IRQn: 'CTIMER0_IRQn'
+        - enable_priority: 'false'
+        - priority: '0'
+      - callback: 'kCTIMER_NoCallback'
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS **********/
+/* clang-format on */
+const ctimer_config_t CTIMER0_config = {
+  .mode = kCTIMER_TimerMode,
+  .input = kCTIMER_Capture_0,
+  .prescale = 0
+};
+const ctimer_match_config_t CTIMER0_Match_0_config = {
+  .matchValue = 18749,
+  .enableCounterReset = true,
+  .enableCounterStop = false,
+  .outControl = kCTIMER_Output_Toggle,
+  .outPinInitState = false,
+  .enableInterrupt = false
+};
+
+static void CTIMER0_init(void) {
+  /* CTIMER0 peripheral initialization */
+  CTIMER_Init(CTIMER0_PERIPHERAL, &CTIMER0_config);
+  /* Match channel 3 of CTIMER0 peripheral initialization */
+  CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &CTIMER0_Match_0_config);
+  /* Start the timer */
+  CTIMER_StartTimer(CTIMER0_PERIPHERAL);
+}
+
+/***********************************************************************************************************************
  * Initialization functions
  **********************************************************************************************************************/
 void BOARD_InitPeripherals(void)
 {
   /* Initialize components */
   GPIO0_init();
+  VREF0_init();
+  ADC1_init();
+  CTIMER0_init();
 }
 
 /***********************************************************************************************************************

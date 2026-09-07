@@ -176,6 +176,14 @@ void BOARD_InitLEDsPins(void);
  */
 void BOARD_InitBUTTONsPins(void);
 
+#define PCR_IBE_ibe0 0x00u /*!<@brief Input Buffer Enable: Disables */
+
+/*!
+ * @brief Configures pin routing and optionally pin electrical features.
+ *
+ */
+void BOARD_InitADCPins(void);
+
 #if defined(__cplusplus)
 }
 #endif
