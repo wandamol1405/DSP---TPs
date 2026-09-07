@@ -29,16 +29,6 @@ typedef enum {
   SAMPLE_RATE_48K
 } sample_rate_t;
 
-// CTIMER configuration
-static const ctimer_match_config_t CTIMER0_matchConfig = {
-    .matchValue = 18749,
-    .enableCounterReset = true,
-    .enableCounterStop = false,
-    .outControl = kCTIMER_Output_NoAction,
-    .outPinInitState = false,
-    .enableInterrupt = false
-};
-
 static sample_rate_t current_sample_rate = SAMPLE_RATE_8K;
 static lpadc_conv_result_t result;
 
@@ -123,7 +113,7 @@ void Timer_SetSampleRate(sample_rate_t rate) {
     break;
   }
 
-  ctimer_match_config_t new_config = CTIMER0_matchConfig;
+  ctimer_match_config_t new_config = CTIMER0_Match_0_config;
   new_config.matchValue = match_value;
 
   CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &new_config);
