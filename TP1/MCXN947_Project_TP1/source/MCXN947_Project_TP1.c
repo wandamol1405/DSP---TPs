@@ -9,6 +9,7 @@
  * @file    MCXN947_Project_TP1.c
  * @brief   Application entry point.
  */
+#include "arm_math.h"
 #include "board.h"
 #include "clock_config.h"
 #include "fsl_debug_console.h"
@@ -19,6 +20,12 @@
 /* TODO: insert other include files here. */
 
 /* TODO: insert other definitions and declarations here. */
+
+#define ADC_BUFFER_SIZE 512
+
+volatile q15_t adc_buffer[ADC_BUFFER_SIZE];
+volatile uint32_t write_index = 0;
+volatile uint32_t read_index = 0;
 
 // Definition of the sample rates
 typedef enum {
@@ -254,6 +261,14 @@ void ADC1_IRQHANDLER(void) {
   /* Place your code here */
   if (is_conversion_running){
 	  LPADC_GetConvResult(ADC1, &result, 0U);
+
+	  adc_buffer[write_index] = (q15_t)result.convValue;
+
+	  write_index++;
+	  if (write_index >= ADC_BUFFER_SIZE){
+		  write_index = 0;
+	  }
+
 	  adc_data_ready = true;
   }
 
