@@ -16,6 +16,7 @@
 #include "fsl_lpadc.h"
 #include "fsl_ctimer.h"
 #include "fsl_clock.h"
+#include "fsl_dac.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -55,6 +56,13 @@ extern "C" {
 #define CTIMER0_PWM_PERIOD_CH kCTIMER_Match_0
 /* Definition of channel 3 ID */
 #define CTIMER0_MATCH_0_CHANNEL kCTIMER_Match_3
+/* BOARD_InitPeripherals defines for DAC0 */
+/* Definition of peripheral ID */
+#define DAC0_PERIPHERAL DAC0
+/* DAC0 interrupt vector ID (number). */
+#define DAC0_IRQN DAC0_IRQn
+/* DAC0 interrupt handler identifier. */
+#define DAC0_IRQHANDLER DAC0_IRQHandler
 
 /***********************************************************************************************************************
  * Global variables
@@ -64,6 +72,8 @@ extern lpadc_conv_command_config_t ADC1_commandsConfig[1];
 extern lpadc_conv_trigger_config_t ADC1_triggersConfig[1];
 extern const ctimer_config_t CTIMER0_config;
 extern const ctimer_match_config_t CTIMER0_Match_0_config;
+/* LPDAC configuration */
+extern const dac_config_t DAC0_config;
 
 /***********************************************************************************************************************
  * Initialization functions

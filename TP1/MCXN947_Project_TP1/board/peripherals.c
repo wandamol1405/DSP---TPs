@@ -361,6 +361,70 @@ static void CTIMER0_init(void) {
 }
 
 /***********************************************************************************************************************
+ * DAC0 initialization code
+ **********************************************************************************************************************/
+/* clang-format off */
+/* TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+instance:
+- name: 'DAC0'
+- type: 'dac_1'
+- mode: 'general'
+- custom_name_enabled: 'false'
+- type_id: 'dac_1_2.1.0'
+- functional_group: 'BOARD_InitPeripherals'
+- peripheral: 'DAC0'
+- config_sets:
+  - fsl_dac:
+    - dac_config:
+      - fifoWatermarkLevel: '0'
+      - fifoTriggerMode: 'kDAC_FIFOTriggerByHardwareMode'
+      - fifoWorkMode: 'kDAC_FIFODisabled'
+      - referenceVoltageSource: 'kDAC_ReferenceVoltageSourceAlt3'
+      - referenceCurrentSource: 'kDAC_ReferenceCurrentSourcePtat'
+      - enableOpampBuffer: 'false'
+      - periodicTriggerNumber: '0'
+      - periodicTriggerWidth: '0'
+      - syncTime: '1'
+      - enableLowerLowPowerMode: 'false'
+    - enable_dma: 'false'
+    - dac_dma: 'kDAC_FIFOEmptyDMAEnable'
+    - enable_DAC: 'true'
+    - enable_convert: 'false'
+    - convert_value: '0'
+    - interrupt_config:
+      - dac_interrupts: ''
+      - enable_irq: 'false'
+      - interrupt:
+        - IRQn: 'DAC0_IRQn'
+        - enable_interrrupt: 'enabled'
+        - enable_priority: 'false'
+        - priority: '0'
+        - enable_custom_name: 'false'
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS **********/
+/* clang-format on */
+const dac_config_t DAC0_config = {
+  .fifoWatermarkLevel = 0UL,
+  .fifoTriggerMode = kDAC_FIFOTriggerByHardwareMode,
+  .fifoWorkMode = kDAC_FIFODisabled,
+  .referenceVoltageSource = kDAC_ReferenceVoltageSourceAlt3,
+  .referenceCurrentSource = kDAC_ReferenceCurrentSourcePtat,
+  .enableOpampBuffer = false,
+  .periodicTriggerNumber = 0UL,
+  .periodicTriggerWidth = 0UL,
+  .syncTime = 1UL,
+  .enableLowerLowPowerMode = false,
+};
+
+static void DAC0_init(void) {
+  /* Power up analog module in SPC */
+  SPC_EnableActiveModeAnalogModules(SPC0, kSPC_controlDac0);
+  /* Initialize the LPDAC */
+  DAC_Init(DAC0_PERIPHERAL, &DAC0_config);
+  /* Enable the LPDAC */
+  DAC_Enable(DAC0_PERIPHERAL, true);
+}
+
+/***********************************************************************************************************************
  * Initialization functions
  **********************************************************************************************************************/
 void BOARD_InitPeripherals(void)
@@ -370,6 +434,7 @@ void BOARD_InitPeripherals(void)
   VREF0_init();
   ADC1_init();
   CTIMER0_init();
+  DAC0_init();
 }
 
 /***********************************************************************************************************************

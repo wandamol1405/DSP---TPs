@@ -17,6 +17,7 @@
 #include "pin_mux.h"
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 /* TODO: insert other include files here. */
 
 /* TODO: insert other definitions and declarations here. */
@@ -38,7 +39,6 @@ typedef enum {
 
 static sample_rate_t current_sample_rate = SAMPLE_RATE_8K;
 static lpadc_conv_result_t result;
-
 static volatile bool is_conversion_running = false; // flag para la IRQ del ADC
 static volatile bool adc_print_flag = false; // flag para imprimir estado del ADC
 static volatile bool freq_print_flag = false;		// flag para imprimir la frecuencia actual
@@ -165,7 +165,6 @@ int main(void) {
   //    PRINTF("Initial sample rate: %d\r\n", current_sample_rate);
   ApplySampleRate(current_sample_rate);
 
-  /* Enter an infinite loop, just incrementing a counter. */
   while (1) {
 
     if (adc_print_flag) {
@@ -188,7 +187,24 @@ int main(void) {
     }
 
     if (adc_data_ready){
-		PRINTF("[ADC] Conversion: %u\r\n", result.convValue);
+		float adcValue;
+		arm_q15_to_float(&adc_buffer[read_index], &adcValue, 1U);	// Tendría que ser un float entre -1 y 1
+//		uint32_t dacValue = LPDAC_DATA_DATA(4095.0F * (0.5F + 0.5F * adcValue));
+		uint32_t dacValue = LPDAC_DATA_DATA(((int32_t)adc_buffer[read_index] + 32768) >> 4);
+
+//		PRINTF("[ADC] Q15: %d | Float: %f\r\n", adc_buffer[read_index], adcValue);	// no funciona %f
+
+		int32_t adc_milli = (int32_t)(adcValue * 1000.0f);
+
+		PRINTF("[ADC] uint16: %u | Q15: %d | Decimal: %d.%03d | DAC: %u\r\n",
+				result.convValue,		// probablemente no quede sincronizado
+				adc_buffer[read_index],
+				adc_milli / 1000,		// inconsistencias de signo
+				abs(adc_milli % 1000),
+				dacValue);
+
+//		DAC_SetData(DAC0, dacValue);
+		read_index = (read_index + 1) % ADC_BUFFER_SIZE;
 		adc_data_ready = false;
 	}
 
@@ -249,6 +265,7 @@ void GPIO0_INT_1_IRQHANDLER(void) {
 void ADC1_IRQHANDLER(void) {
   uint32_t trigger_status_flag;
   uint32_t status_flag;
+
   /* Trigger interrupt flags */
   trigger_status_flag = LPADC_GetTriggerStatusFlags(ADC1_PERIPHERAL);
   /* Interrupt flags */
@@ -262,12 +279,9 @@ void ADC1_IRQHANDLER(void) {
   if (is_conversion_running){
 	  LPADC_GetConvResult(ADC1, &result, 0U);
 
-	  adc_buffer[write_index] = (q15_t)result.convValue;
+	  adc_buffer[write_index] = (q15_t)((int32_t)result.convValue - 32768);	// -0x8000
 
-	  write_index++;
-	  if (write_index >= ADC_BUFFER_SIZE){
-		  write_index = 0;
-	  }
+	  write_index = (write_index + 1) % ADC_BUFFER_SIZE;
 
 	  adc_data_ready = true;
   }

@@ -321,6 +321,7 @@ void BOARD_InitBootPins(void)
     BOARD_InitLEDsPins();
     BOARD_InitBUTTONsPins();
     BOARD_InitADCPins();
+    BOARD_InitDACPins();
 }
 
 /* clang-format off */
@@ -768,6 +769,39 @@ void BOARD_InitADCPins(void)
 
                       /* Input Buffer Enable: Disables. */
                       | PORT_PCR_IBE(PCR_IBE_ibe0));
+}
+
+/* clang-format off */
+/*
+ * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+BOARD_InitDACPins:
+- options: {callFromInitBoot: 'true', coreID: cm33_core0, enableClock: 'true'}
+- pin_list:
+  - {pin_num: T1, peripheral: DAC0, signal: OUT, pin_signal: PIO4_2/TRIG_IN6/FC2_P2/CT_INP12/SMARTDMA_PIO26/PLU_IN2/SINC0_MBIT3/DAC0_OUT/ADC0_A4/ADC1_A4/CMP0_IN4N/CMP1_IN4N/CMP2_IN4N}
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS ***********
+ */
+/* clang-format on */
+
+/* FUNCTION ************************************************************************************************************
+ *
+ * Function Name : BOARD_InitDACPins
+ * Description   : Configures pin routing and optionally pin electrical features.
+ *
+ * END ****************************************************************************************************************/
+void BOARD_InitDACPins(void)
+{
+    /* Enables the clock for PORT4: Enables clock */
+    CLOCK_EnableClock(kCLOCK_Port4);
+
+    /* PORT4_2 (pin T1) is configured as DAC0_OUT */
+    PORT_SetPinMux(PORT4, 2U, kPORT_MuxAlt0);
+
+    PORT4->PCR[2] = ((PORT4->PCR[2] &
+                      /* Mask bits to zero which are setting */
+                      (~(PORT_PCR_IBE_MASK)))
+
+                     /* Input Buffer Enable: Disables. */
+                     | PORT_PCR_IBE(PCR_IBE_ibe0));
 }
 /***********************************************************************************************************************
  * EOF
