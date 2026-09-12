@@ -196,10 +196,11 @@ int main(void) {
 
 		int32_t adc_milli = (int32_t)(adcValue * 1000.0f);
 
-		PRINTF("[ADC] uint16: %u | Q15: %d | Decimal: %d.%03d | DAC: %u\r\n",
+		PRINTF("[ADC] uint16: %u | Q15: %d | Decimal: %s%d.%03d | DAC: %u\r\n",
 				result.convValue,		// probablemente no quede sincronizado
 				adc_buffer[read_index],
-				adc_milli / 1000,		// inconsistencias de signo
+				adc_milli < 0 ? "-" : "\0",
+				adc_milli / 1000,
 				abs(adc_milli % 1000),
 				dacValue);
 
