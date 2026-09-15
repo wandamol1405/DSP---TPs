@@ -266,6 +266,73 @@ Los archivos temporales, resultados de compilación y configuraciones específic
 
 ---
 
+## Interfaz de control por UART
+
+Además de las teclas físicas, la aplicación acepta comandos de un solo carácter por el mismo puerto serie que usa el debug console (LPUART4, **115200 baud, 8N1**, sin control de flujo — el mismo cable USB del programador/depurador, sin necesidad de hardware adicional).
+
+Comandos disponibles (`ProcessUartCommands()` en `source/MCXN947_Project_TP1.c`):
+
+| Tecla | Acción |
+| --- | --- |
+| `r` | Alternar RUN / STOP |
+| `f` | Cambiar frecuencia de muestreo (8k → 16k → 22k → 44k → 48k) |
+| `d` | Volcar las 512 muestras del buffer circular por UART (CSV) |
+| `p` | Activar/desactivar streaming continuo (formato `entrada,salida`) |
+| `m` | Alternar modo de procesamiento DSP |
+| `h` | Mostrar ayuda |
+
+Los comandos se procesan carácter a carácter (sin esperar Enter), así que hace falta un terminal que envíe cada tecla al tipearla, no uno que la almacene hasta confirmar una línea.
+
+Hay dos formas de interactuar con el puerto — **no simultáneamente**: el sistema operativo solo permite que un proceso tenga el puerto serie abierto a la vez, así que hay que cerrar una herramienta antes de abrir la otra.
+
+### Liberar el puerto en MCUXpresso IDE
+
+MCUXpresso IDE suele quedarse con el puerto serie abierto (vía la vista **Terminal**, conectada al puerto COM del MCU-Link para mostrar los `PRINTF`), lo que bloquea a minicom o a la GUI con un error tipo `Device or resource busy`. Antes de usar cualquiera de las dos opciones de abajo:
+
+1. Si tenés la vista **Terminal** abierta y conectada (pestaña junto a la Consola, con el ícono de enchufe verde), hacé click en el ícono de **Disconnect** (enchufe rojo) en su barra de herramientas, o cerrá la vista directamente.
+2. Si el terminal se reconecta solo cada vez que iniciás una sesión de debug, revisá la configuración de lanzamiento: **Run → Debug Configurations…**, seleccioná la configuración del proyecto (p. ej. `MCXN947_Project_TP1 Debug`), y en la pestaña **Serial Terminal** (el nombre puede variar levemente según la versión de MCUXpresso) desmarcá **Enable Serial Terminal** / **Connect terminal on startup**. Así el debugger deja de abrir el puerto automáticamente al flashear o iniciar debug, y queda libre para minicom o la GUI.
+
+Esto no afecta al flasheo ni al debug en sí (breakpoints, step, etc.) — solo desactiva la apertura automática del puerto serie.
+
+### Opción A — minicom (texto crudo)
+
+Útil para ver la salida tal cual la imprime el firmware (`PRINTF`) y mandar comandos sueltos, sin gráficos.
+
+```bash
+sudo apt install minicom      # si no está instalado
+
+# Ubicar el puerto (normalmente /dev/ttyACM0 con la placa conectada por USB)
+ls /dev/ttyACM*
+
+minicom -D /dev/ttyACM0 -b 115200
+```
+
+Dentro de minicom, presionar directamente las teclas de comando (`h`, `r`, `f`, `d`, `p`, `m`) — no hace falta Enter.
+
+Para salir: `Ctrl-A` y luego `X`, confirmar con Enter.
+
+### Opción B — GUI de Python (`TP1/tools/uart_gui.py`)
+
+Da botones para cada comando y grafica en vivo: streaming crudo, un "osciloscopio" (volcado de buffer con disparo/trigger y captura automática), y el espectro (FFT) con estimación de la frecuencia fundamental.
+
+```bash
+cd TP1/tools
+
+# Entorno virtual recomendado (una sola vez)
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# En Ubuntu, tkinter es un paquete del sistema aparte:
+sudo apt install python3-tk
+
+python3 uart_gui.py
+```
+
+Uso: elegir el puerto serie en el desplegable, click en **Conectar**, y usar los botones de comando o las pestañas (Streaming en vivo, Osciloscopio, Espectro FFT, Log de consola). Ver `TP1/tools/uart_gui.py` (docstring inicial) para el detalle de cada pestaña.
+
+---
+
 ## Documentación final
 
 El informe deberá incluir:

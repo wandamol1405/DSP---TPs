@@ -6,9 +6,15 @@ Se conecta al puerto serie (LPUART4 / debug console, 115200 baud) del proyecto
 MCXN947_Project_TP1, permite enviar los comandos definidos en
 ProcessUartCommands() (source/MCXN947_Project_TP1.c) y grafica:
   - El streaming en tiempo real habilitado con el comando 'p' (entrada,salida).
-  - El volcado de las 512 muestras del buffer circular habilitado con 'd'.
-  - El espectro (FFT) y una estimación de la frecuencia fundamental, a partir
-    del streaming o del último volcado de buffer.
+    Es solo para inspección visual rápida: uart_stage.c decima por 32 sin
+    filtro anti-aliasing, así que no es apto para medir frecuencia.
+  - Un "osciloscopio" armado sobre el volcado de 512 muestras del buffer
+    circular ('d'): sin decimar, a la frecuencia real del ADC. Con captura
+    automática periódica y disparo (trigger) por cruce ascendente para que
+    la forma de onda se vea estable, como en un osciloscopio real.
+  - El espectro (FFT) y la estimación de la frecuencia fundamental, siempre
+    calculados a partir de ese mismo volcado (nunca del streaming decimado,
+    que aliasa cualquier señal por encima de fs_ADC/64).
 
 Requisitos: pyserial, matplotlib, numpy (Tkinter suele venir con Python; en
 Linux puede requerir el paquete del sistema "python3-tk").
@@ -38,13 +44,14 @@ mpl_style.use("dark_background")
 
 BAUD_RATE_DEFAULT = 115200
 LOG_MAX_LINES = 500
-STREAM_WINDOW = 1000          # muestras visibles en el gráfico en tiempo real
-STREAM_FFT_WINDOW = 256       # muestras usadas para el espectro del streaming
-STREAM_DECIMATION = 32        # debe coincidir con s_decimation en uart_stage.c
+STREAM_WINDOW = 1000          # muestras visibles en el gráfico de streaming
 DUMP_BUFFER_SIZE = 512        # PIPELINE_BUFFER_SIZE en pipeline.h
 DEFAULT_SAMPLE_RATE_HZ = 8000
 PLOT_REFRESH_MS = 50          # ~20 Hz de refresco de gráficos
 QUEUE_POLL_MS = 20
+AUTO_CAPTURE_INTERVAL_MS = 400   # período del "osciloscopio" (envía 'd' solo)
+SCOPE_CYCLES_TO_SHOW = 4         # ciclos de la fundamental a mostrar, tipo time/div
+MIN_SCOPE_SAMPLES = 32           # piso para no mostrar ventanas degeneradas
 
 DUMP_START_RE = re.compile(r"--- INICIO BUFFER DUMP")
 DUMP_END_RE = re.compile(r"--- FIN BUFFER DUMP")
@@ -108,6 +115,43 @@ def estimate_spectrum(samples, fs):
         fundamental = freqs[peak_bin]
 
     return freqs, mag_db, fundamental
+
+
+def prepare_scope_view(values, fs, fundamental):
+    """Recorta y alinea el buffer para que se vea como un osciloscopio.
+
+    - Si se conoce la fundamental, muestra ~SCOPE_CYCLES_TO_SHOW ciclos en
+      vez del buffer completo (evita ver 0.3 ciclos a baja frecuencia o 40
+      ciclos amontonados a alta frecuencia).
+    - Busca el primer cruce ascendente por la media dentro del rango que
+      todavía deja suficientes muestras después (disparo/trigger), para que
+      la fase se vea estable entre capturas sucesivas en vez de "saltar".
+
+    Devuelve (tiempos_ms, valores) ya recortados y alineados.
+    """
+    n = len(values)
+    if n == 0 or fs is None or fs <= 0:
+        return [], []
+
+    if fundamental and fundamental > 0:
+        samples_per_cycle = fs / fundamental
+        display_len = int(min(n, max(MIN_SCOPE_SAMPLES, SCOPE_CYCLES_TO_SHOW * samples_per_cycle)))
+    else:
+        display_len = n
+
+    arr = np.asarray(values, dtype=np.float64)
+    mean = arr.mean()
+
+    trigger_idx = 0
+    search_end = max(1, n - display_len)
+    for i in range(1, search_end):
+        if arr[i - 1] < mean <= arr[i]:
+            trigger_idx = i
+            break
+
+    window = values[trigger_idx: trigger_idx + display_len]
+    t_ms = [i / fs * 1000.0 for i in range(len(window))]
+    return t_ms, window
 
 
 class SerialWorker:
@@ -177,19 +221,24 @@ class UartGuiApp(tk.Tk):
 
         self._in_dump = False
         self._dump_chunks: list[str] = []
-        self._dump_dirty = False
         self._last_dump_values: list[int] | None = None
+
+        # Resultados ya calculados sobre el último volcado, listos para dibujar
+        self._scope_dirty = False
+        self._scope_view = ([], [])           # (t_ms, valores)
+        self._spectrum_data = (None, None, None)  # (freqs, mag_db, fundamental)
 
         self._sample_rate_hz = DEFAULT_SAMPLE_RATE_HZ
 
         self._q15_float = tk.BooleanVar(value=False)
-        self._spectrum_source = tk.StringVar(value="stream")
+        self._auto_capture = tk.BooleanVar(value=True)
 
         self._apply_dark_theme()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(QUEUE_POLL_MS, self._poll_queue)
         self.after(PLOT_REFRESH_MS, self._refresh_plots)
+        self.after(AUTO_CAPTURE_INTERVAL_MS, self._auto_capture_tick)
 
     # --------------------------------------------------------------- theme
     def _apply_dark_theme(self):
@@ -284,6 +333,12 @@ class UartGuiApp(tk.Tk):
     def _build_stream_tab(self, notebook):
         stream_tab = ttk.Frame(notebook)
         notebook.add(stream_tab, text="Streaming en vivo (p)")
+        ttk.Label(
+            stream_tab,
+            text=("Solo inspección visual: decimado por 32 sin filtro anti-aliasing "
+                  "(uart_stage.c). No se usa para medir frecuencia — ver pestaña Osciloscopio."),
+            foreground="#c9a227", padding=(4, 4),
+        ).pack(side=tk.TOP, fill=tk.X)
         self._stream_fig = Figure(figsize=(5, 3), dpi=100)
         self._stream_ax = self._stream_fig.add_subplot(111)
         self._stream_ax.set_title("Entrada vs Salida (Serial Plotter)")
@@ -298,13 +353,25 @@ class UartGuiApp(tk.Tk):
 
     def _build_dump_tab(self, notebook):
         dump_tab = ttk.Frame(notebook)
-        notebook.add(dump_tab, text="Volcado de buffer (d)")
+        notebook.add(dump_tab, text="Osciloscopio (buffer)")
+
+        controls = ttk.Frame(dump_tab, padding=(0, 4))
+        controls.pack(side=tk.TOP, fill=tk.X)
+        ttk.Checkbutton(
+            controls, text=f"Captura automática (cada {AUTO_CAPTURE_INTERVAL_MS} ms, envía 'd')",
+            variable=self._auto_capture,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Label(
+            controls, text="Sin decimar, a la frecuencia real del ADC · con disparo por cruce ascendente",
+        ).pack(side=tk.LEFT, padx=12)
+
         self._dump_fig = Figure(figsize=(5, 3), dpi=100)
         self._dump_ax = self._dump_fig.add_subplot(111)
-        self._dump_ax.set_title("Buffer circular (última captura)")
-        self._dump_ax.set_xlabel("Índice")
+        self._dump_ax.set_title("Forma de onda (último volcado, alineada por trigger)")
+        self._dump_ax.set_xlabel("Tiempo (ms)")
         self._dump_ax.set_ylabel("Valor")
-        (self._dump_line,) = self._dump_ax.plot([], [], linewidth=0.9)
+        self._dump_ax.axhline(0, color="#555555", linewidth=0.6)
+        (self._dump_line,) = self._dump_ax.plot([], [], linewidth=1.0)
         self._dump_fig.tight_layout()
         self._dump_canvas = FigureCanvasTkAgg(self._dump_fig, master=dump_tab)
         self._dump_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -313,17 +380,11 @@ class UartGuiApp(tk.Tk):
         spectrum_tab = ttk.Frame(notebook)
         notebook.add(spectrum_tab, text="Espectro (FFT)")
 
-        controls = ttk.Frame(spectrum_tab, padding=(0, 4))
-        controls.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(controls, text="Fuente:").pack(side=tk.LEFT, padx=(4, 8))
-        ttk.Radiobutton(
-            controls, text="Streaming en vivo (decimado)", value="stream",
-            variable=self._spectrum_source,
-        ).pack(side=tk.LEFT, padx=4)
-        ttk.Radiobutton(
-            controls, text="Último volcado de buffer (fs completa)", value="dump",
-            variable=self._spectrum_source,
-        ).pack(side=tk.LEFT, padx=4)
+        ttk.Label(
+            spectrum_tab,
+            text="Calculado siempre sobre el último volcado de buffer (fs completa, sin decimar).",
+            padding=(4, 4),
+        ).pack(side=tk.TOP, fill=tk.X)
 
         self._spectrum_fig = Figure(figsize=(5, 3), dpi=100)
         self._spectrum_ax = self._spectrum_fig.add_subplot(111)
@@ -458,7 +519,16 @@ class UartGuiApp(tk.Tk):
         if not values:
             return
         self._last_dump_values = values
-        self._dump_dirty = True
+
+        freqs, mag_db, fundamental = estimate_spectrum(values, self._sample_rate_hz)
+        self._spectrum_data = (freqs, mag_db, fundamental)
+        self._scope_view = prepare_scope_view(values, self._sample_rate_hz, fundamental)
+        self._scope_dirty = True
+
+    def _auto_capture_tick(self):
+        if self._auto_capture.get() and self._worker.is_open and not self._in_dump:
+            self._worker.send_char("d")
+        self.after(AUTO_CAPTURE_INTERVAL_MS, self._auto_capture_tick)
 
     def _log(self, line: str):
         self._log_text.config(state=tk.NORMAL)
@@ -487,32 +557,26 @@ class UartGuiApp(tk.Tk):
                 self._stream_ax.set_ylim(*ylim)
             self._stream_canvas.draw_idle()
 
-        if self._dump_dirty:
-            self._dump_dirty = False
-            values = self._scale(self._last_dump_values)
-            self._dump_line.set_data(range(len(values)), values)
-            self._dump_ax.set_xlim(0, max(len(values) - 1, 1))
-            ylim = (-1.05, 1.05) if self._q15_float.get() else (-33000, 33000)
-            self._dump_ax.set_ylim(*ylim)
-            self._dump_canvas.draw_idle()
-
-        self._refresh_spectrum()
+        if self._scope_dirty:
+            self._scope_dirty = False
+            self._redraw_scope()
+            self._redraw_spectrum()
 
         self.after(PLOT_REFRESH_MS, self._refresh_plots)
 
-    def _refresh_spectrum(self):
-        source = self._spectrum_source.get()
-        if source == "dump":
-            samples = self._last_dump_values
-            fs = self._sample_rate_hz
-        else:
-            samples = list(self._stream_in)[-STREAM_FFT_WINDOW:]
-            fs = self._sample_rate_hz / STREAM_DECIMATION if self._sample_rate_hz else None
-
-        if not samples:
+    def _redraw_scope(self):
+        t_ms, values = self._scope_view
+        if not values:
             return
+        scaled = self._scale(values)
+        self._dump_line.set_data(t_ms, scaled)
+        self._dump_ax.set_xlim(0, t_ms[-1] if len(t_ms) > 1 else 1)
+        ylim = (-1.05, 1.05) if self._q15_float.get() else (-33000, 33000)
+        self._dump_ax.set_ylim(*ylim)
+        self._dump_canvas.draw_idle()
 
-        freqs, mag_db, fundamental = estimate_spectrum(samples, fs)
+    def _redraw_spectrum(self):
+        freqs, mag_db, fundamental = self._spectrum_data
         if freqs is None:
             return
 
