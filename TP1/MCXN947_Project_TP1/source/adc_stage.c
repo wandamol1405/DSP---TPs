@@ -47,9 +47,16 @@ void adc_stage_set_sample_rate(sample_rate_t rate) {
     }
     s_current_sample_rate = rate;
 
+    // Frenar el timer antes de cambiar la configuración
+    CTIMER_StopTimer(CTIMER0_PERIPHERAL);
+
     ctimer_match_config_t new_config = CTIMER0_Match_0_config;
     new_config.matchValue = s_match_values[rate];
     CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &new_config);
+
+    // Reiniciar el contador a 0 y volver a arrancar
+    CTIMER_Reset(CTIMER0_PERIPHERAL);
+    CTIMER_StartTimer(CTIMER0_PERIPHERAL);
 }
 
 void adc_stage_apply_sample_rate(sample_rate_t rate, bool deferred) {
