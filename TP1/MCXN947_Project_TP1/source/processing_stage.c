@@ -4,31 +4,36 @@
  * Implementación de la etapa de procesamiento digital de señales.
  */
 
-#include "processing_stage.h"
-#include <math.h>
+#include "processing_stage.h" // declaraciones propias (processing_mode_t y API pública)
+#include <math.h>              // (reservado para futuros filtros/algoritmos, no usado aún)
 
-static processing_mode_t s_current_mode = PROCESSING_MODE_PASSTHROUGH;
-static float s_gain = 1.0f;
+static processing_mode_t s_current_mode = PROCESSING_MODE_PASSTHROUGH; // modo de procesamiento activo
+static float s_gain = 1.0f; // ganancia aplicada en PROCESSING_MODE_GAIN
 
+// Vuelve al modo por defecto (passthrough) y ganancia unitaria.
 void processing_stage_init(void) {
     s_current_mode = PROCESSING_MODE_PASSTHROUGH;
     s_gain = 1.0f;
 }
 
+// Cambia el modo de procesamiento aplicado a cada muestra.
 void processing_stage_set_mode(processing_mode_t mode) {
     s_current_mode = mode;
 }
 
+// Getter del modo de procesamiento actual.
 processing_mode_t processing_stage_get_mode(void) {
     return s_current_mode;
 }
 
+// Convierte una muestra Q15 a float en [-1.0, 1.0) usando la función del CMSIS-DSP.
 float processing_stage_q15_to_float(q15_t sample) {
     float fval = 0.0f;
     arm_q15_to_float(&sample, &fval, 1U);
     return fval;
 }
 
+// Convierte un float a Q15, saturando primero al rango representable para evitar overflow.
 q15_t processing_stage_float_to_q15(float value) {
     q15_t sample = 0;
     // Saturación en rango [-1.0, 1.0)
@@ -41,6 +46,7 @@ q15_t processing_stage_float_to_q15(float value) {
     return sample;
 }
 
+// Aplica el modo de procesamiento actual a una única muestra Q15 y devuelve el resultado.
 q15_t processing_stage_process_sample(q15_t in_sample) {
     q15_t out_sample = in_sample;
 
@@ -86,6 +92,7 @@ q15_t processing_stage_process_sample(q15_t in_sample) {
     return out_sample;
 }
 
+// Aplica processing_stage_process_sample() a cada elemento de un bloque de muestras contiguas.
 void processing_stage_process_block(const q15_t *in, q15_t *out, uint32_t length) {
     if (in == NULL || out == NULL || length == 0) {
         return;

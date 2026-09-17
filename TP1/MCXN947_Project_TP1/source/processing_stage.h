@@ -9,9 +9,9 @@
 #ifndef PROCESSING_STAGE_H_
 #define PROCESSING_STAGE_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-#include "arm_math.h"
+#include <stdint.h>   // tipo uint32_t
+#include <stdbool.h>  // (reservado para futura extensión de la API, no usado aún)
+#include "arm_math.h" // tipo q15_t y funciones de conversión (arm_q15_to_float, arm_float_to_q15)
 
 /**
  * @brief Modos de operación del bloque de procesamiento.

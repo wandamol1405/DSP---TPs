@@ -10,28 +10,29 @@
  * @brief   Punto de entrada de la aplicación y control de usuario (TP1 DSP).
  */
 
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdbool.h> // tipo bool
+#include <stdio.h>   // declara printf(), a la que se mapea PRINTF en esta configuración
+#include <stdlib.h>  // (reservado, no se usa directamente en este archivo)
 
-#include "arm_math.h"
-#include "board.h"
-#include "clock_config.h"
-#include "fsl_debug_console.h"
-#include "peripherals.h"
-#include "pin_mux.h"
+#include "arm_math.h"      // tipo q15_t (CMSIS-DSP)
+#include "board.h"         // funciones de la placa (LEDs, init de boot, debug console)
+#include "clock_config.h"  // BOARD_InitBootClocks() y configuración de PLL/clocks generada por MCUXpresso
+#include "fsl_debug_console.h" // macro PRINTF usada en todo este archivo
+#include "peripherals.h"   // periféricos inicializados por el Config Tool (ADC1, CTIMER0, VREF0, GPIO0)
+#include "pin_mux.h"       // BOARD_InitBootPins() (mux de pines generado por MCUXpresso)
 
-#include "circular_buffer.h"
-#include "adc_stage.h"
-#include "processing_stage.h"
-#include "dac_stage.h"
-#include "uart_stage.h"
-#include "pipeline.h"
+#include "circular_buffer.h"  // tipo circular_buffer_t (usado indirectamente vía pipeline)
+#include "adc_stage.h"        // sample_rate_t y control de la etapa de adquisición
+#include "processing_stage.h" // processing_mode_t y control del modo de procesamiento DSP
+#include "dac_stage.h"        // etapa de salida analógica (incluida por completitud del pipeline)
+#include "uart_stage.h"       // comandos por UART: try_getchar, streaming, is_streaming_enabled
+#include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
 
-/* Flags de notificación para impresión en el loop principal */
-static volatile bool adc_print_flag = false;
-static volatile bool freq_print_flag = false;
-static volatile bool buffer_dump_flag = false;
+/* Flags de notificación para impresión en el loop principal (se setean desde ISRs o
+ * desde ProcessUartCommands, y se consumen y limpian en el while(1) de main) */
+static volatile bool adc_print_flag = false;    // pide imprimir el estado RUN/STOP
+static volatile bool freq_print_flag = false;   // pide imprimir la frecuencia de muestreo actual
+static volatile bool buffer_dump_flag = false;  // pide volcar el buffer circular por UART
 
 /**
  * @brief Configura el color del LED según la frecuencia de muestreo.
@@ -88,12 +89,14 @@ static void ProcessUartCommands(void) {
     switch (ch) {
     case 'r':
     case 'R':
+      // Alterna RUN/STOP y pide que se imprima el nuevo estado en el loop principal
       pipeline_toggle_run_stop();
       adc_print_flag = true;
       break;
 
     case 'f':
     case 'F': {
+      // Avanza a la siguiente frecuencia, actualiza el LED y pide imprimir la nueva frecuencia
       sample_rate_t next = pipeline_next_sample_rate();
       SetLedForSampleRate(next);
       freq_print_flag = true;
@@ -102,11 +105,13 @@ static void ProcessUartCommands(void) {
 
     case 'd':
     case 'D':
+      // Solo levanta la bandera: el volcado real se hace en el loop principal, no en esta función
       buffer_dump_flag = true;
       break;
 
     case 'p':
     case 'P': {
+      // Activa/desactiva el streaming continuo (uart_stage_task) y confirma por consola
       bool streaming = !uart_stage_is_streaming_enabled();
       uart_stage_enable_streaming(streaming);
       PRINTF("[UART] Streaming Serial Plotter: %s\r\n", streaming ? "ACTIVADO" : "DESACTIVADO");
@@ -115,6 +120,7 @@ static void ProcessUartCommands(void) {
 
     case 'm':
     case 'M': {
+      // Avanza cíclicamente al siguiente modo de procesamiento DSP y lo confirma por consola
       processing_mode_t cur = processing_stage_get_mode();
       processing_mode_t next = (processing_mode_t)((cur + 1) % 4);
       processing_stage_set_mode(next);
@@ -126,6 +132,7 @@ static void ProcessUartCommands(void) {
     case 'h':
     case 'H':
     case '?':
+      // Imprime el menú de ayuda con todos los comandos disponibles
       PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
       PRINTF("  'r': Alternar RUN / STOP\r\n");
       PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k)\r\n");
@@ -137,6 +144,7 @@ static void ProcessUartCommands(void) {
       break;
 
     default:
+      // Carácter no reconocido: se ignora
       break;
     }
   }

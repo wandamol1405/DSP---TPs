@@ -8,21 +8,21 @@
 #ifndef ADC_STAGE_H_
 #define ADC_STAGE_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-#include "arm_math.h"
-#include "circular_buffer.h"
+#include <stdint.h>   // tipos de ancho fijo (uint16_t, uint32_t)
+#include <stdbool.h>  // tipo bool
+#include "arm_math.h" // tipo q15_t (CMSIS-DSP)
+#include "circular_buffer.h" // circular_buffer_t, donde se acumulan las muestras adquiridas
 
 /**
  * @brief Frecuencias de muestreo soportadas por la aplicación.
  */
 typedef enum {
-    SAMPLE_RATE_8K = 0,
-    SAMPLE_RATE_16K,
-    SAMPLE_RATE_22K,
-    SAMPLE_RATE_44K,
-    SAMPLE_RATE_48K,
-    SAMPLE_RATE_COUNT
+    SAMPLE_RATE_8K = 0,   // 8 kS/s
+    SAMPLE_RATE_16K,      // 16 kS/s
+    SAMPLE_RATE_22K,      // 22 kS/s
+    SAMPLE_RATE_44K,      // 44 kS/s
+    SAMPLE_RATE_48K,      // 48 kS/s
+    SAMPLE_RATE_COUNT     // cantidad de frecuencias soportadas (no es una frecuencia válida)
 } sample_rate_t;
 
 /**

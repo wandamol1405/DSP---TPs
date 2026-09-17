@@ -7,11 +7,12 @@
 #ifndef CIRCULAR_BUFFER_H_
 #define CIRCULAR_BUFFER_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include "arm_math.h"
+#include <stdint.h>  // tipos de ancho fijo (uint32_t)
+#include <stdbool.h> // tipo bool
+#include <stddef.h>  // NULL
+#include "arm_math.h" // tipo q15_t (Q15 con signo de 16 bits) del CMSIS-DSP
 
+// Capacidad por defecto del buffer circular, en muestras (según consigna del TP1)
 #define CIRCULAR_BUFFER_DEFAULT_CAPACITY 512
 
 typedef struct {

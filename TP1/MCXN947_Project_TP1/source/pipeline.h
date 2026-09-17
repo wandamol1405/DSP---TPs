@@ -8,15 +8,16 @@
 #ifndef PIPELINE_H_
 #define PIPELINE_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-#include "arm_math.h"
-#include "circular_buffer.h"
-#include "adc_stage.h"
-#include "processing_stage.h"
-#include "dac_stage.h"
-#include "uart_stage.h"
+#include <stdint.h>   // tipo uint32_t
+#include <stdbool.h>  // tipo bool
+#include "arm_math.h" // tipo q15_t (CMSIS-DSP)
+#include "circular_buffer.h"  // circular_buffer_t, buffer interno del pipeline
+#include "adc_stage.h"        // etapa de adquisición (ADC + CTIMER) y sample_rate_t
+#include "processing_stage.h" // etapa de procesamiento DSP
+#include "dac_stage.h"        // etapa de salida analógica (DAC0)
+#include "uart_stage.h"       // etapa de comunicación por UART (streaming y volcado de buffer)
 
+// Tamaño del buffer circular interno del pipeline, en muestras (según consigna del TP1).
 #define PIPELINE_BUFFER_SIZE 512
 
 /**

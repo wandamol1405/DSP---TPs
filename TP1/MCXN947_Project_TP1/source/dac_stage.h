@@ -9,9 +9,9 @@
 #ifndef DAC_STAGE_H_
 #define DAC_STAGE_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-#include "arm_math.h"
+#include <stdint.h>   // tipo uint32_t
+#include <stdbool.h>  // (reservado para futura extensión de la API, no usado aún)
+#include "arm_math.h" // tipo q15_t (CMSIS-DSP)
 
 /**
  * @brief Inicializa la etapa de DAC.

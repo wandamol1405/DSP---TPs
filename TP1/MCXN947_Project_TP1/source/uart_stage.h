@@ -10,10 +10,10 @@
 #ifndef UART_STAGE_H_
 #define UART_STAGE_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-#include "arm_math.h"
-#include "circular_buffer.h"
+#include <stdint.h>   // tipo uint32_t
+#include <stdbool.h>  // tipo bool
+#include "arm_math.h" // tipo q15_t (CMSIS-DSP)
+#include "circular_buffer.h" // circular_buffer_t, para el volcado por UART
 
 /**
  * @brief Inicializa la etapa UART.
