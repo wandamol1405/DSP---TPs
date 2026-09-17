@@ -4,20 +4,21 @@
  * Implementación de la etapa de comunicación UART.
  */
 
-#include "uart_stage.h"
-#include "fsl_debug_console.h"
-#include "board.h"
-#include "fsl_lpuart.h"
-#include <stdio.h>
+#include "uart_stage.h"        // declaraciones propias
+#include "fsl_debug_console.h" // macro PRINTF, usada para toda la salida por UART
+#include "board.h"             // BOARD_DEBUG_UART_BASEADDR (instancia física de LPUART usada)
+#include "fsl_lpuart.h"        // acceso de bajo nivel al LPUART (lectura directa de RX, sin pasar por PRINTF/GETCHAR)
+#include <stdio.h>             // declara printf(), a la que se mapea la macro PRINTF en esta configuración (SDK_DEBUGCONSOLE=0)
 
-static bool s_streaming_enabled = false;
-static uint32_t s_decimation = 32;
-static uint32_t s_decimation_counter = 0;
+static bool s_streaming_enabled = false;      // true si el modo streaming ('p') está activo
+static uint32_t s_decimation = 32;            // enviar 1 de cada N muestras en el streaming
+static uint32_t s_decimation_counter = 0;     // contador de muestras recibidas desde el último envío
 
-static volatile bool s_sample_ready = false;
-static volatile q15_t s_stream_in = 0;
-static volatile q15_t s_stream_out = 0;
+static volatile bool s_sample_ready = false;  // true cuando hay un par entrada/salida pendiente de imprimir
+static volatile q15_t s_stream_in = 0;        // última muestra de entrada retenida para streaming
+static volatile q15_t s_stream_out = 0;       // última muestra de salida retenida para streaming
 
+// Deja la etapa UART en su estado inicial: streaming desactivado y decimación por defecto.
 void uart_stage_init(void) {
     s_streaming_enabled = false;
     s_decimation = 32;
@@ -25,20 +26,26 @@ void uart_stage_init(void) {
     s_sample_ready = false;
 }
 
+// Activa o desactiva el envío continuo de muestras (comando 'p').
 void uart_stage_enable_streaming(bool enable) {
     s_streaming_enabled = enable;
 }
 
+// Getter de si el streaming continuo está activo.
 bool uart_stage_is_streaming_enabled(void) {
     return s_streaming_enabled;
 }
 
+// Cambia cada cuántas muestras se envía un dato por streaming (ignora valores no positivos).
 void uart_stage_set_decimation(uint32_t decimation) {
     if (decimation > 0) {
         s_decimation = decimation;
     }
 }
 
+// Recibe un par entrada/salida del pipeline; si el streaming está activo, cuenta hasta
+// completar el factor de decimación y entonces deja el par listo para que uart_stage_task()
+// lo imprima (evita bloquear el pipeline con un PRINTF en cada muestra).
 void uart_stage_feed_sample(q15_t in_sample, q15_t out_sample) {
     if (!s_streaming_enabled) {
         return;
@@ -53,6 +60,8 @@ void uart_stage_feed_sample(q15_t in_sample, q15_t out_sample) {
     }
 }
 
+// Tarea periódica para el loop principal: si hay una muestra pendiente del streaming,
+// la imprime (esto es lo que efectivamente saca los datos por el puerto, fuera de la ISR).
 void uart_stage_task(void) {
     if (s_streaming_enabled && s_sample_ready) {
         s_sample_ready = false;
@@ -61,6 +70,8 @@ void uart_stage_task(void) {
     }
 }
 
+// Imprime todas las muestras del buffer circular por UART, entre marcadores de
+// inicio/fin, en CSV (16 valores por línea) o una por línea con índice.
 void uart_stage_dump_buffer(circular_buffer_t *cb, bool format_csv) {
     if (cb == NULL || cb->buffer == NULL) {
         PRINTF("[UART] Buffer nulo\r\n");
@@ -90,6 +101,8 @@ void uart_stage_dump_buffer(circular_buffer_t *cb, bool format_csv) {
     PRINTF("--- FIN BUFFER DUMP ---\r\n\r\n");
 }
 
+// Lee un byte recibido por UART sin bloquear, accediendo directamente al registro del
+// LPUART (no usa GETCHAR/DbgConsole, así que funciona sin depender de esa configuración).
 bool uart_stage_try_getchar(char *ch) {
     if (ch == NULL) {
         return false;
