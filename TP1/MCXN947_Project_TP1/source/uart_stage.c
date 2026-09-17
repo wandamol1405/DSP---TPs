@@ -11,6 +11,7 @@
 #include <stdio.h>             // declara printf(), a la que se mapea la macro PRINTF en esta configuración (SDK_DEBUGCONSOLE=0)
 
 static bool s_streaming_enabled = false;      // true si el modo streaming ('p') está activo
+static uart_stream_mode_t s_stream_mode = UART_STREAM_MODE_PLOTTER;
 static uint32_t s_decimation = 32;            // enviar 1 de cada N muestras en el streaming
 static uint32_t s_decimation_counter = 0;     // contador de muestras recibidas desde el último envío
 
@@ -21,6 +22,7 @@ static volatile q15_t s_stream_out = 0;       // última muestra de salida reten
 // Deja la etapa UART en su estado inicial: streaming desactivado y decimación por defecto.
 void uart_stage_init(void) {
     s_streaming_enabled = false;
+    s_stream_mode = UART_STREAM_MODE_PLOTTER;
     s_decimation = 32;
     s_decimation_counter = 0;
     s_sample_ready = false;
@@ -34,6 +36,18 @@ void uart_stage_enable_streaming(bool enable) {
 // Getter de si el streaming continuo está activo.
 bool uart_stage_is_streaming_enabled(void) {
     return s_streaming_enabled;
+}
+
+// Cambia entre el formato del plotter del repositorio y Serial-Oscilloscope.
+void uart_stage_set_stream_mode(uart_stream_mode_t mode) {
+    if (mode <= UART_STREAM_MODE_OSCILLOSCOPE) {
+        s_stream_mode = mode;
+    }
+}
+
+// Getter del formato de salida actual.
+uart_stream_mode_t uart_stage_get_stream_mode(void) {
+    return s_stream_mode;
 }
 
 // Cambia cada cuántas muestras se envía un dato por streaming (ignora valores no positivos).
@@ -65,8 +79,13 @@ void uart_stage_feed_sample(q15_t in_sample, q15_t out_sample) {
 void uart_stage_task(void) {
     if (s_streaming_enabled && s_sample_ready) {
         s_sample_ready = false;
-        // Formato para Serial Plotter: Entrada,Salida
-        PRINTF("%d,%d\r\n", (int)s_stream_in, (int)s_stream_out);
+        if (s_stream_mode == UART_STREAM_MODE_OSCILLOSCOPE) {
+            // Serial-Oscilloscope requiere tres valores separados por dos comas.
+            PRINTF("%d,0,0\r\n", (int)s_stream_out);
+        } else {
+            // Formato usado por la GUI del repositorio: entrada,salida.
+            PRINTF("%d,%d\r\n", (int)s_stream_in, (int)s_stream_out);
+        }
     }
 }
 

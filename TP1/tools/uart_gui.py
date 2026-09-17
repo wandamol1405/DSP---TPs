@@ -67,6 +67,7 @@ COMMANDS = {
     "Cambiar frecuencia": "f",
     "Volcar buffer (512 muestras)": "d",
     "Streaming Serial Plotter": "p",
+    "Formato Plotter / Serial-Oscilloscope": "o",
     "Modo de procesamiento DSP": "m",
     "Ayuda": "h",
 }

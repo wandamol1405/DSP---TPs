@@ -278,10 +278,11 @@ Comandos disponibles (`ProcessUartCommands()` en `source/MCXN947_Project_TP1.c`)
 | `f` | Cambiar frecuencia de muestreo (8k → 16k → 22k → 44k → 48k) |
 | `d` | Volcar las 512 muestras del buffer circular por UART (CSV) |
 | `p` | Activar/desactivar streaming continuo (formato `entrada,salida`) |
+| `o` | Alternar formato del streaming: `entrada,salida` / `salida,0,0` |
 | `m` | Alternar modo de procesamiento DSP |
 | `h` | Mostrar ayuda |
 
-Los comandos se procesan carácter a carácter (sin esperar Enter), así que hace falta un terminal que envíe cada tecla al tipearla, no uno que la almacene hasta confirmar una línea.
+Los comandos se procesan carácter a carácter (sin esperar Enter), así que hace falta un terminal que envíe cada tecla al tipearla, no uno que la almacene hasta confirmar una línea. El formato `entrada,salida` es el usado por la GUI del repositorio. El formato `salida,0,0` agrega los dos separadores requeridos por Serial-Oscilloscope; mientras el streaming está activo no se imprimen mensajes de consola para no contaminar el flujo de datos.
 
 Hay dos formas de interactuar con el puerto — **no simultáneamente**: el sistema operativo solo permite que un proceso tenga el puerto serie abierto a la vez, así que hay que cerrar una herramienta antes de abrir la otra.
 

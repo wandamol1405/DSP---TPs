@@ -16,6 +16,14 @@
 #include "circular_buffer.h" // circular_buffer_t, para el volcado por UART
 
 /**
+ * @brief Formato de las muestras enviadas durante el streaming.
+ */
+typedef enum {
+	UART_STREAM_MODE_PLOTTER = 0,      /**< Entrada y salida: entrada,salida */
+	UART_STREAM_MODE_OSCILLOSCOPE      /**< Tres canales: salida,0,0 */
+} uart_stream_mode_t;
+
+/**
  * @brief Inicializa la etapa UART.
  */
 void uart_stage_init(void);
@@ -51,6 +59,17 @@ void uart_stage_enable_streaming(bool enable);
  * @brief Consulta si el streaming continuo está activo.
  */
 bool uart_stage_is_streaming_enabled(void);
+
+/**
+ * @brief Configura el formato de salida del streaming.
+ * @param mode Formato compatible con el visualizador seleccionado.
+ */
+void uart_stage_set_stream_mode(uart_stream_mode_t mode);
+
+/**
+ * @brief Obtiene el formato de salida actual del streaming.
+ */
+uart_stream_mode_t uart_stage_get_stream_mode(void);
 
 /**
  * @brief Configura el factor de decimación del streaming.

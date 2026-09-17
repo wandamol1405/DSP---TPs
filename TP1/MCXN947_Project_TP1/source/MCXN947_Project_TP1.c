@@ -111,10 +111,27 @@ static void ProcessUartCommands(void) {
 
     case 'p':
     case 'P': {
-      // Activa/desactiva el streaming continuo (uart_stage_task) y confirma por consola
+      // El modo activo reserva el UART para líneas CSV compatibles con Serial-Oscilloscope.
       bool streaming = !uart_stage_is_streaming_enabled();
       uart_stage_enable_streaming(streaming);
-      PRINTF("[UART] Streaming Serial Plotter: %s\r\n", streaming ? "ACTIVADO" : "DESACTIVADO");
+      if (!streaming) {
+        PRINTF("[UART] Streaming Serial Plotter: DESACTIVADO\r\n");
+      }
+      break;
+    }
+
+    case 'o':
+    case 'O': {
+      // Alterna el formato de streaming sin imprimir texto que contamine el CSV.
+      uart_stream_mode_t current = uart_stage_get_stream_mode();
+      uart_stream_mode_t next = (current == UART_STREAM_MODE_PLOTTER)
+                                    ? UART_STREAM_MODE_OSCILLOSCOPE
+                                    : UART_STREAM_MODE_PLOTTER;
+      uart_stage_set_stream_mode(next);
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[UART] Formato streaming: %s\r\n",
+               next == UART_STREAM_MODE_OSCILLOSCOPE ? "SERIAL-OSCILLOSCOPE" : "PLOTTER");
+      }
       break;
     }
 
@@ -125,7 +142,9 @@ static void ProcessUartCommands(void) {
       processing_mode_t next = (processing_mode_t)((cur + 1) % 4);
       processing_stage_set_mode(next);
       const char *mode_names[] = {"PASSTHROUGH", "FLOAT_CONV", "INVERT", "GAIN"};
-      PRINTF("[DSP] Modo de procesamiento: %s\r\n", mode_names[next]);
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[DSP] Modo de procesamiento: %s\r\n", mode_names[next]);
+      }
       break;
     }
 
@@ -133,14 +152,17 @@ static void ProcessUartCommands(void) {
     case 'H':
     case '?':
       // Imprime el menú de ayuda con todos los comandos disponibles
-      PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
-      PRINTF("  'r': Alternar RUN / STOP\r\n");
-      PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k)\r\n");
-      PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
-      PRINTF("  'p': Activar/Desactivar streaming continuo para Serial Plotter\r\n");
-      PRINTF("  'm': Alternar modo de procesamiento DSP\r\n");
-      PRINTF("  'h': Mostrar esta ayuda\r\n");
-      PRINTF("=================================\r\n\r\n");
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
+        PRINTF("  'r': Alternar RUN / STOP\r\n");
+        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k)\r\n");
+        PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
+        PRINTF("  'p': Activar/Desactivar streaming continuo para Serial Plotter\r\n");
+        PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
+        PRINTF("  'm': Alternar modo de procesamiento DSP\r\n");
+        PRINTF("  'h': Mostrar esta ayuda\r\n");
+        PRINTF("=================================\r\n\r\n");
+      }
       break;
 
     default:
@@ -187,23 +209,29 @@ int main(void) {
 
     /* 3. Notificación de estado RUN / STOP */
     if (adc_print_flag) {
-      if (pipeline_is_running()) {
-        PRINTF("[RUN]: Adquisicion activada\r\n");
-      } else {
-        PRINTF("[STOP]: Adquisicion pausada (reproduciendo buffer en loop)\r\n");
+      if (!uart_stage_is_streaming_enabled()) {
+        if (pipeline_is_running()) {
+          PRINTF("[RUN]: Adquisicion activada\r\n");
+        } else {
+          PRINTF("[STOP]: Adquisicion pausada (reproduciendo buffer en loop)\r\n");
+        }
       }
       adc_print_flag = false;
     }
 
     /* 4. Notificación de frecuencia de muestreo */
     if (freq_print_flag) {
-      PRINTF("[INFO] Frecuencia de muestreo: %u Hz\r\n", (unsigned int)pipeline_get_sample_rate_hz());
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[INFO] Frecuencia de muestreo: %u Hz\r\n", (unsigned int)pipeline_get_sample_rate_hz());
+      }
       freq_print_flag = false;
     }
 
     /* 5. Volcado de buffer solicitado */
     if (buffer_dump_flag) {
-      pipeline_dump_to_uart(true);
+      if (!uart_stage_is_streaming_enabled()) {
+        pipeline_dump_to_uart(true);
+      }
       buffer_dump_flag = false;
     }
   }
