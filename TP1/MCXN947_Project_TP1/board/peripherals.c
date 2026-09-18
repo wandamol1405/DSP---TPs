@@ -381,10 +381,10 @@ instance:
       - fifoWorkMode: 'kDAC_FIFODisabled'
       - referenceVoltageSource: 'kDAC_ReferenceVoltageSourceAlt3'
       - referenceCurrentSource: 'kDAC_ReferenceCurrentSourcePtat'
-      - enableOpampBuffer: 'false'
+      - enableOpampBuffer: 'true'
       - periodicTriggerNumber: '0'
       - periodicTriggerWidth: '0'
-      - syncTime: '1'
+      - syncTime: '5'
       - enableLowerLowPowerMode: 'false'
     - enable_dma: 'false'
     - dac_dma: 'kDAC_FIFOEmptyDMAEnable'
@@ -408,10 +408,10 @@ const dac_config_t DAC0_config = {
   .fifoWorkMode = kDAC_FIFODisabled,
   .referenceVoltageSource = kDAC_ReferenceVoltageSourceAlt3,
   .referenceCurrentSource = kDAC_ReferenceCurrentSourcePtat,
-  .enableOpampBuffer = false,
+  .enableOpampBuffer = true,
   .periodicTriggerNumber = 0UL,
   .periodicTriggerWidth = 0UL,
-  .syncTime = 1UL,
+  .syncTime = 5UL,
   .enableLowerLowPowerMode = false,
 };
 
