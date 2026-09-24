@@ -7,274 +7,287 @@
 
 /**
  * @file    MCXN947_Project_TP1.c
- * @brief   Application entry point.
+ * @brief   Punto de entrada de la aplicación y control de usuario (TP1 DSP).
  */
-#include "arm_math.h"
-#include "board.h"
-#include "clock_config.h"
-#include "fsl_debug_console.h"
-#include "peripherals.h"
-#include "pin_mux.h"
-#include <stdbool.h>
-#include <stdio.h>
-/* TODO: insert other include files here. */
 
-/* TODO: insert other definitions and declarations here. */
+#include <stdbool.h> // tipo bool
+#include <stdio.h>   // declara printf(), a la que se mapea PRINTF en esta configuración
+#include <stdlib.h>  // (reservado, no se usa directamente en este archivo)
 
-#define ADC_BUFFER_SIZE 512
+#include "arm_math.h"      // tipo q15_t (CMSIS-DSP)
+#include "board.h"         // funciones de la placa (LEDs, init de boot, debug console)
+#include "clock_config.h"  // BOARD_InitBootClocks() y configuración de PLL/clocks generada por MCUXpresso
+#include "fsl_debug_console.h" // macro PRINTF usada en todo este archivo
+#include "peripherals.h"   // periféricos inicializados por el Config Tool (ADC1, CTIMER0, VREF0, GPIO0)
+#include "pin_mux.h"       // BOARD_InitBootPins() (mux de pines generado por MCUXpresso)
 
-volatile q15_t adc_buffer[ADC_BUFFER_SIZE];
-volatile uint32_t write_index = 0;
-volatile uint32_t read_index = 0;
+#include "circular_buffer.h"  // tipo circular_buffer_t (usado indirectamente vía pipeline)
+#include "adc_stage.h"        // sample_rate_t y control de la etapa de adquisición
+#include "processing_stage.h" // processing_mode_t y control del modo de procesamiento DSP
+#include "dac_stage.h"        // etapa de salida analógica (incluida por completitud del pipeline)
+#include "uart_stage.h"       // comandos por UART: try_getchar, streaming, is_streaming_enabled
+#include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
 
-// Definition of the sample rates
-typedef enum {
-  SAMPLE_RATE_8K = 0,
-  SAMPLE_RATE_16K,
-  SAMPLE_RATE_22K,
-  SAMPLE_RATE_44K,
-  SAMPLE_RATE_48K
-} sample_rate_t;
-
-static sample_rate_t current_sample_rate = SAMPLE_RATE_8K;
-static lpadc_conv_result_t result;
-
-static volatile bool is_conversion_running = false; // flag para la IRQ del ADC
-static volatile bool adc_print_flag = false; // flag para imprimir estado del ADC
-static volatile bool freq_print_flag = false;		// flag para imprimir la frecuencia actual
-static volatile bool adc_data_ready = false;
+/* Flags de notificación para impresión en el loop principal (se setean desde ISRs o
+ * desde ProcessUartCommands, y se consumen y limpian en el while(1) de main) */
+static volatile bool adc_print_flag = false;    // pide imprimir el estado RUN/STOP
+static volatile bool freq_print_flag = false;   // pide imprimir la frecuencia de muestreo actual
+static volatile bool buffer_dump_flag = false;  // pide volcar el buffer circular por UART
 
 /**
+ * @brief Configura el color del LED según la frecuencia de muestreo.
+ *
  * 8 kHz  → R (Rojo)
  * 16 kHz → G (Verde)
  * 22 kHz → B (Azul)
  * 44 kHz → R + G (Amarillo)
  * 48 kHz → R + B (Magenta)
  */
-
-/**
- * @brief Set the LED color based on the sample rate.
- * @param rate The sample rate to set the LED for.
- */
 void SetLedForSampleRate(sample_rate_t rate) {
   switch (rate) {
   case SAMPLE_RATE_8K:
-    // LED correspondiente a 8 kHz
     LED_RED_ON();
     LED_GREEN_OFF();
     LED_BLUE_OFF();
     break;
 
   case SAMPLE_RATE_16K:
-    // LED correspondiente a 16 kHz
     LED_RED_OFF();
     LED_GREEN_ON();
     LED_BLUE_OFF();
     break;
 
   case SAMPLE_RATE_22K:
-    // LED correspondiente a 22 kHz
     LED_RED_OFF();
     LED_GREEN_OFF();
     LED_BLUE_ON();
     break;
 
   case SAMPLE_RATE_44K:
-    // LED correspondiente a 44 kHz
     LED_RED_ON();
     LED_GREEN_ON();
     LED_BLUE_OFF();
     break;
 
   case SAMPLE_RATE_48K:
-    // LED correspondiente a 48 kHz
     LED_RED_ON();
     LED_GREEN_OFF();
     LED_BLUE_ON();
     break;
+
+  default:
+    break;
   }
 }
 
 /**
- * @brief Set the sample rate for the timer.
- * @param rate The sample rate to set.
+ * @brief Procesa comandos recibidos por el puerto serie (no bloqueante).
  */
-void Timer_SetSampleRate(sample_rate_t rate) {
-  uint32_t match_value = 0;
+static void ProcessUartCommands(void) {
+  char ch = 0;
+  if (uart_stage_try_getchar(&ch)) {
+    switch (ch) {
+    case 'r':
+    case 'R':
+      // Alterna RUN/STOP y pide que se imprima el nuevo estado en el loop principal
+      pipeline_toggle_run_stop();
+      adc_print_flag = true;
+      break;
 
-  switch (rate) {
-  case SAMPLE_RATE_8K:
-    match_value = 18749; // 8 kHz
-    break;
-  case SAMPLE_RATE_16K:
-    match_value = 9374; // 16 kHz
-    break;
-  case SAMPLE_RATE_22K:
-    match_value = 6817; // 22 kHz
-    break;
-  case SAMPLE_RATE_44K:
-    match_value = 3408; // 44 kHz
-    break;
-  case SAMPLE_RATE_48K:
-    match_value = 3124; // 48 kHz
-    break;
+    case 'f':
+    case 'F': {
+      // Avanza a la siguiente frecuencia, actualiza el LED y pide imprimir la nueva frecuencia
+      sample_rate_t next = pipeline_next_sample_rate();
+      SetLedForSampleRate(next);
+      freq_print_flag = true;
+      break;
+    }
+
+    case 'd':
+    case 'D':
+      // Solo levanta la bandera: el volcado real se hace en el loop principal, no en esta función
+      buffer_dump_flag = true;
+      break;
+
+    case 'p':
+    case 'P': {
+      // El modo activo reserva el UART para líneas CSV compatibles con Serial-Oscilloscope.
+      bool streaming = !uart_stage_is_streaming_enabled();
+      uart_stage_enable_streaming(streaming);
+      if (!streaming) {
+        PRINTF("[UART] Streaming Serial Plotter: DESACTIVADO\r\n");
+      }
+      break;
+    }
+
+    case 'o':
+    case 'O': {
+      // Alterna el formato de streaming sin imprimir texto que contamine el CSV.
+      uart_stream_mode_t current = uart_stage_get_stream_mode();
+      uart_stream_mode_t next = (current == UART_STREAM_MODE_PLOTTER)
+                                    ? UART_STREAM_MODE_OSCILLOSCOPE
+                                    : UART_STREAM_MODE_PLOTTER;
+      uart_stage_set_stream_mode(next);
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[UART] Formato streaming: %s\r\n",
+               next == UART_STREAM_MODE_OSCILLOSCOPE ? "SERIAL-OSCILLOSCOPE" : "PLOTTER");
+      }
+      break;
+    }
+
+    case 'm':
+    case 'M': {
+      // Avanza cíclicamente al siguiente modo de procesamiento DSP y lo confirma por consola
+      processing_mode_t cur = processing_stage_get_mode();
+      processing_mode_t next = (processing_mode_t)((cur + 1) % 4);
+      processing_stage_set_mode(next);
+      const char *mode_names[] = {"PASSTHROUGH", "FLOAT_CONV", "INVERT", "GAIN"};
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[DSP] Modo de procesamiento: %s\r\n", mode_names[next]);
+      }
+      break;
+    }
+
+    case 'h':
+    case 'H':
+    case '?':
+      // Imprime el menú de ayuda con todos los comandos disponibles
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
+        PRINTF("  'r': Alternar RUN / STOP\r\n");
+        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k)\r\n");
+        PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
+        PRINTF("  'p': Activar/Desactivar streaming continuo para Serial Plotter\r\n");
+        PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
+        PRINTF("  'm': Alternar modo de procesamiento DSP\r\n");
+        PRINTF("  'h': Mostrar esta ayuda\r\n");
+        PRINTF("=================================\r\n\r\n");
+      }
+      break;
+
+    default:
+      // Carácter no reconocido: se ignora
+      break;
+    }
   }
-
-  ctimer_match_config_t new_config = CTIMER0_Match_0_config;
-  new_config.matchValue = match_value;
-
-  CTIMER_SetupMatch(CTIMER0_PERIPHERAL, CTIMER0_MATCH_0_CHANNEL, &new_config);
-
-  freq_print_flag = true;
 }
 
 /**
- * @brief Apply a sample rate.
- * @param rate The sample rate to apply.
- */
-void ApplySampleRate(sample_rate_t rate) {
-  SetLedForSampleRate(rate);
-  Timer_SetSampleRate(rate);
-}
-
-void NextSampleRate(void) {
-  if (current_sample_rate == SAMPLE_RATE_48K) {
-    current_sample_rate = SAMPLE_RATE_8K;
-  } else {
-    current_sample_rate++;
-  }
-
-  ApplySampleRate(current_sample_rate);
-}
-
-/**
- * @brief   Application entry point.
+ * @brief Application entry point.
  */
 int main(void) {
-
-  /* Init board hardware. */
+  /* Inicialización de hardware de la placa */
   BOARD_InitBootPins();
   BOARD_InitBootClocks();
   BOARD_InitBootPeripherals();
 #ifndef BOARD_INIT_DEBUG_CONSOLE_PERIPHERAL
-  /* Init FSL debug console. */
   BOARD_InitDebugConsole();
 #endif
 
-  PRINTF("Hello TP1\r\n");
-  //    PRINTF("Initial sample rate: %d\r\n", current_sample_rate);
-  ApplySampleRate(current_sample_rate);
+  PRINTF("\r\n========================================\r\n");
+  PRINTF("  TP1 DSP - FRDM-MCXN947 Modularizado\r\n");
+  PRINTF("  Etapas: ADC -> Buffer -> DSP -> DAC/UART\r\n");
+  PRINTF("  Envie 'h' para ver comandos por consola\r\n");
+  PRINTF("========================================\r\n\r\n");
 
-  /* Enter an infinite loop, just incrementing a counter. */
+  /* Inicialización del pipeline y sus etapas */
+  pipeline_init();
+
+  /* Configuración inicial: frecuencia 8 kHz, modo STOP diferido */
+  sample_rate_t initial_rate = pipeline_get_sample_rate();
+  SetLedForSampleRate(initial_rate);
+  pipeline_set_sample_rate(initial_rate);
+
+  freq_print_flag = true;
+
   while (1) {
+    /* 1. Tarea periódica de transmisión UART (Serial Plotter) */
+    uart_stage_task();
 
+    /* 2. Procesamiento de comandos de entrada por UART */
+    ProcessUartCommands();
+
+    /* 3. Notificación de estado RUN / STOP */
     if (adc_print_flag) {
-      if (is_conversion_running)
-        PRINTF("[RUN]: adquisición activada\r\n");
-      else
-        PRINTF("[STOP]: adquisición desactivada\r\n");
+      if (!uart_stage_is_streaming_enabled()) {
+        if (pipeline_is_running()) {
+          PRINTF("[RUN]: Adquisicion activada\r\n");
+        } else {
+          PRINTF("[STOP]: Adquisicion pausada (reproduciendo buffer en loop)\r\n");
+        }
+      }
       adc_print_flag = false;
     }
 
-    if (freq_print_flag){
-    	PRINTF("[INFO] Sample rate set to %d Hz\r\n",
-    	         (current_sample_rate == SAMPLE_RATE_8K)    ? 8000
-    	         : (current_sample_rate == SAMPLE_RATE_16K) ? 16000
-    	         : (current_sample_rate == SAMPLE_RATE_22K) ? 22000
-    	         : (current_sample_rate == SAMPLE_RATE_44K) ? 44000
-    	         : (current_sample_rate == SAMPLE_RATE_48K) ? 48000
-				 : 0);
-    	freq_print_flag = false;
+    /* 4. Notificación de frecuencia de muestreo */
+    if (freq_print_flag) {
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[INFO] Frecuencia de muestreo: %u Hz\r\n", (unsigned int)pipeline_get_sample_rate_hz());
+      }
+      freq_print_flag = false;
     }
 
-    if (adc_data_ready){
-		PRINTF("[ADC] Conversion: %u\r\n", result.convValue);
-		adc_data_ready = false;
-	}
-
+    /* 5. Volcado de buffer solicitado */
+    if (buffer_dump_flag) {
+      if (!uart_stage_is_streaming_enabled()) {
+        pipeline_dump_to_uart(true);
+      }
+      buffer_dump_flag = false;
+    }
   }
+
   return 0;
 }
 
 /**
- * @brief   GPIO00_IRQn interrupt handler.
- * @details This function changes the sample rate to the next one in the list.
+ * @brief Manejador de interrupción GPIO00_IRQn (Pulsador SW3).
+ *        Cambia a la siguiente frecuencia de muestreo.
  */
 void GPIO0_INT_0_IRQHANDLER(void) {
-  /* Get pin flags 0 */
   uint32_t pin_flags0 = GPIO_GpioGetInterruptChannelFlags(GPIO0, 0U);
 
-  /* Place your interrupt code here */
+  sample_rate_t new_rate = pipeline_next_sample_rate();
+  SetLedForSampleRate(new_rate);
+  freq_print_flag = true;
 
-  // Change to the next sample rate
-  NextSampleRate();
-
-  /* Clear pin flags 0 */
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags0, 0U);
 
-/* Add for ARM errata 838869, affects Cortex-M4, Cortex-M4F
- Store immediate overlapping exception return operation might vector to
- incorrect interrupt. */
 #if defined __CORTEX_M && (__CORTEX_M == 4U)
   __DSB();
 #endif
 }
 
 /**
- * @brief   GPIO01_IRQn interrupt handler.
- * @details This function toggles the conversion running state.
+ * @brief Manejador de interrupción GPIO01_IRQn (Pulsador SW2).
+ *        Alterna el estado entre RUN y STOP.
  */
 void GPIO0_INT_1_IRQHANDLER(void) {
-  /* Get pin flags 1 */
   uint32_t pin_flags1 = GPIO_GpioGetInterruptChannelFlags(GPIO0, 1U);
 
-  /* Place your interrupt code here */
-
-  // Toggle the conversion running state
-  is_conversion_running = !is_conversion_running;
+  pipeline_toggle_run_stop();
   adc_print_flag = true;
 
-  /* Clear pin flags 1 */
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags1, 1U);
 
-/* Add for ARM errata 838869, affects Cortex-M4, Cortex-M4F
- Store immediate overlapping exception return operation might vector to
- incorrect interrupt. */
 #if defined __CORTEX_M && (__CORTEX_M == 4U)
   __DSB();
 #endif
 }
 
-/* ADC1_IRQn interrupt handler */
+/**
+ * @brief Manejador de interrupción ADC1_IRQn.
+ *        Dispara una vez por período de muestreo (8k, 16k, 22k, 44k, 48k).
+ *        Ejecuta el paso del pipeline de manera desacoplada:
+ *        ADC -> Buffer Circular -> Procesamiento DSP -> Salidas DAC / UART.
+ */
 void ADC1_IRQHANDLER(void) {
-  uint32_t trigger_status_flag;
-  uint32_t status_flag;
-  /* Trigger interrupt flags */
-  trigger_status_flag = LPADC_GetTriggerStatusFlags(ADC1_PERIPHERAL);
-  /* Interrupt flags */
-  status_flag = LPADC_GetStatusFlags(ADC1_PERIPHERAL);
-  /* Clears trigger interrupt flags */
-  LPADC_ClearTriggerStatusFlags(ADC1_PERIPHERAL, trigger_status_flag);
-  /* Clears interrupt flags */
-  LPADC_ClearStatusFlags(ADC1_PERIPHERAL, status_flag);
+  /* Limpia las banderas de hardware del LPADC */
+  adc_stage_clear_flags();
 
-  /* Place your code here */
-  if (is_conversion_running){
-	  LPADC_GetConvResult(ADC1, &result, 0U);
+  /* Ejecuta un paso del pipeline */
+  pipeline_step();
 
-	  adc_buffer[write_index] = (q15_t)result.convValue;
-
-	  write_index++;
-	  if (write_index >= ADC_BUFFER_SIZE){
-		  write_index = 0;
-	  }
-
-	  adc_data_ready = true;
-  }
-
-  /* Add for ARM errata 838869, affects Cortex-M4, Cortex-M4F
-     Store immediate overlapping exception return operation might vector to incorrect interrupt. */
-  #if defined __CORTEX_M && (__CORTEX_M == 4U)
-    __DSB();
-  #endif
+#if defined __CORTEX_M && (__CORTEX_M == 4U)
+  __DSB();
+#endif
 }

@@ -426,7 +426,7 @@ void BOARD_BootClockFROHF144M(void);
 #define BOARD_BOOTCLOCKPLL150M_CTIMER2_CLOCK          0UL            /* Clock consumers of CTIMER2_clock output : CTIMER2 */
 #define BOARD_BOOTCLOCKPLL150M_CTIMER3_CLOCK          0UL            /* Clock consumers of CTIMER3_clock output : CTIMER3 */
 #define BOARD_BOOTCLOCKPLL150M_CTIMER4_CLOCK          0UL            /* Clock consumers of CTIMER4_clock output : CTIMER4 */
-#define BOARD_BOOTCLOCKPLL150M_DAC0_CLOCK             0UL            /* Clock consumers of DAC0_clock output : DAC0 */
+#define BOARD_BOOTCLOCKPLL150M_DAC0_CLOCK             48000000UL     /* Clock consumers of DAC0_clock output : DAC0 */
 #define BOARD_BOOTCLOCKPLL150M_DAC1_CLOCK             0UL            /* Clock consumers of DAC1_clock output : DAC1 */
 #define BOARD_BOOTCLOCKPLL150M_DAC2_CLOCK             0UL            /* Clock consumers of DAC2_clock output : DAC2 */
 #define BOARD_BOOTCLOCKPLL150M_EMVSIM0_CLOCK          0UL            /* Clock consumers of EMVSIM0_clock output : EMVSIM0 */
