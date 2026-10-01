@@ -4,7 +4,7 @@ Este repositorio contiene los trabajos prácticos de la materia Procesamiento Di
 ## Contenido
 Cada carpeta corresponde a un trabajo practico (TP) de la materia:
 
-- TP1
+- TP1: Muestreo con MCXN947 
 
 ## Objetivo
 El objetivo de este repositorio es documentar y centralizar los ejercicios prácticos y experimentos realizados durante la cursada, con el fin de:

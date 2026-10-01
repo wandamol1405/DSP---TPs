@@ -107,6 +107,7 @@ expansion_headers:
     - {id: 12, pin_num: B7, pin_signal: PIO0_23/WUU0_IN5/EWM0_OUT_b/FC1_P3/CT_INP3/FLEXIO0_D7/ADC0_A15/CMP2_IN2}
 - {id: frdm_arduino, name: LPCXpressoV2/V3 Expansion Header}
 - {id: micro_bus, name: mikroBUS Click Header}
+external_user_signals: {}
 pin_labels:
 - {pin_num: A1, pin_signal: PIO1_8/WUU0_IN10/LPTMR1_ALT3/TRACE_DATA0/FC4_P0/FC5_P4/CT_INP8/SCT0_OUT2/FLEXIO0_D16/SMARTDMA_PIO4/PLU_OUT0/ENET0_TXD2/I3C1_SDA/TSI0_CH17/ADC1_A8,
   label: 'P1_8/J9[32]', identifier: DEBUG_UART_RX}
@@ -305,6 +306,7 @@ pin_labels:
 #include "fsl_common.h"
 #include "fsl_port.h"
 #include "fsl_gpio.h"
+#include "fsl_inputmux.h"
 #include "pin_mux.h"
 
 /* FUNCTION ************************************************************************************************************
@@ -318,6 +320,8 @@ void BOARD_InitBootPins(void)
     BOARD_InitDEBUG_UARTPins();
     BOARD_InitLEDsPins();
     BOARD_InitBUTTONsPins();
+    BOARD_InitADCPins();
+    BOARD_InitDACPins();
 }
 
 /* clang-format off */
@@ -727,6 +731,77 @@ void BOARD_InitBUTTONsPins(void)
 
          /* Invert Input: Does not invert. */
          | PORT_PCR_INV(PCR_INV_inv0));
+}
+
+/* clang-format off */
+/*
+ * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+BOARD_InitADCPins:
+- options: {callFromInitBoot: 'true', coreID: cm33_core0, enableClock: 'true'}
+- pin_list:
+  - {peripheral: ADC1, signal: 'TRG_CH, 0', pin_signal: CTIMER0_MATCH3}
+  - {pin_num: M4, peripheral: ADC1, signal: 'A, 23', pin_signal: PIO1_23/FC4_P3/CT_INP15/SCT0_OUT5/FLEXIO0_D31/SMARTDMA_PIO19/ADC1_A23}
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS ***********
+ */
+/* clang-format on */
+
+/* FUNCTION ************************************************************************************************************
+ *
+ * Function Name : BOARD_InitADCPins
+ * Description   : Configures pin routing and optionally pin electrical features.
+ *
+ * END ****************************************************************************************************************/
+void BOARD_InitADCPins(void)
+{
+    /* Enables the clock for INPUTMUX: Enables clock */
+    CLOCK_EnableClock(kCLOCK_InputMux0);
+    /* Enables the clock for PORT1: Enables clock */
+    CLOCK_EnableClock(kCLOCK_Port1);
+    /* Timer CTIMER0 Match 3 is selected as trigger input for ADC1 channel 0 */
+    INPUTMUX_AttachSignal(INPUTMUX0, 0U, kINPUTMUX_Ctimer0M3ToAdc1Trigger);
+
+    /* PORT1_23 (pin M4) is configured as ADC1_A23 */
+    PORT_SetPinMux(PORT1, 23U, kPORT_MuxAlt0);
+
+    PORT1->PCR[23] = ((PORT1->PCR[23] &
+                       /* Mask bits to zero which are setting */
+                       (~(PORT_PCR_IBE_MASK)))
+
+                      /* Input Buffer Enable: Disables. */
+                      | PORT_PCR_IBE(PCR_IBE_ibe0));
+}
+
+/* clang-format off */
+/*
+ * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+BOARD_InitDACPins:
+- options: {callFromInitBoot: 'true', coreID: cm33_core0, enableClock: 'true'}
+- pin_list:
+  - {pin_num: T1, peripheral: DAC0, signal: OUT, pin_signal: PIO4_2/TRIG_IN6/FC2_P2/CT_INP12/SMARTDMA_PIO26/PLU_IN2/SINC0_MBIT3/DAC0_OUT/ADC0_A4/ADC1_A4/CMP0_IN4N/CMP1_IN4N/CMP2_IN4N}
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS ***********
+ */
+/* clang-format on */
+
+/* FUNCTION ************************************************************************************************************
+ *
+ * Function Name : BOARD_InitDACPins
+ * Description   : Configures pin routing and optionally pin electrical features.
+ *
+ * END ****************************************************************************************************************/
+void BOARD_InitDACPins(void)
+{
+    /* Enables the clock for PORT4: Enables clock */
+    CLOCK_EnableClock(kCLOCK_Port4);
+
+    /* PORT4_2 (pin T1) is configured as DAC0_OUT */
+    PORT_SetPinMux(PORT4, 2U, kPORT_MuxAlt0);
+
+    PORT4->PCR[2] = ((PORT4->PCR[2] &
+                      /* Mask bits to zero which are setting */
+                      (~(PORT_PCR_IBE_MASK)))
+
+                     /* Input Buffer Enable: Disables. */
+                     | PORT_PCR_IBE(PCR_IBE_ibe0));
 }
 /***********************************************************************************************************************
  * EOF

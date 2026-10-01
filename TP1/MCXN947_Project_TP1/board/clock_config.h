@@ -405,7 +405,7 @@ void BOARD_BootClockFROHF144M(void);
 
 /* Clock outputs (values are in Hz): */
 #define BOARD_BOOTCLOCKPLL150M_ADC0_CLOCK             0UL            /* Clock consumers of ADC0_clock output : ADC0 */
-#define BOARD_BOOTCLOCKPLL150M_ADC1_CLOCK             0UL            /* Clock consumers of ADC1_clock output : ADC1 */
+#define BOARD_BOOTCLOCKPLL150M_ADC1_CLOCK             48000000UL     /* Clock consumers of ADC1_clock output : ADC1 */
 #define BOARD_BOOTCLOCKPLL150M_CLK16K0_TOVBAT_CLOCK   0UL            /* Clock consumers of CLK16K0_toVBAT_clock output : N/A */
 #define BOARD_BOOTCLOCKPLL150M_CLK16K1_TOVSYS_CLOCK   0UL            /* Clock consumers of CLK16K1_toVSYS_clock output : CMP0, CMP1, CMP2, LPTMR0, LPTMR1 */
 #define BOARD_BOOTCLOCKPLL150M_CLK16K2_TOWAKE_CLOCK   0UL            /* Clock consumers of CLK16K2_toWAKE_clock output : N/A */
@@ -421,12 +421,12 @@ void BOARD_BootClockFROHF144M(void);
 #define BOARD_BOOTCLOCKPLL150M_CMP1RRDIV_CLOCK        0UL            /* Clock consumers of CMP1RRDIV_clock output : CMP1 */
 #define BOARD_BOOTCLOCKPLL150M_CMP2FDIV_CLOCK         0UL            /* Clock consumers of CMP2FDIV_clock output : CMP2 */
 #define BOARD_BOOTCLOCKPLL150M_CMP2RRDIV_CLOCK        0UL            /* Clock consumers of CMP2RRDIV_clock output : CMP2 */
-#define BOARD_BOOTCLOCKPLL150M_CTIMER0_CLOCK          0UL            /* Clock consumers of CTIMER0_clock output : CTIMER0 */
+#define BOARD_BOOTCLOCKPLL150M_CTIMER0_CLOCK          150000000UL    /* Clock consumers of CTIMER0_clock output : CTIMER0 */
 #define BOARD_BOOTCLOCKPLL150M_CTIMER1_CLOCK          0UL            /* Clock consumers of CTIMER1_clock output : CTIMER1 */
 #define BOARD_BOOTCLOCKPLL150M_CTIMER2_CLOCK          0UL            /* Clock consumers of CTIMER2_clock output : CTIMER2 */
 #define BOARD_BOOTCLOCKPLL150M_CTIMER3_CLOCK          0UL            /* Clock consumers of CTIMER3_clock output : CTIMER3 */
 #define BOARD_BOOTCLOCKPLL150M_CTIMER4_CLOCK          0UL            /* Clock consumers of CTIMER4_clock output : CTIMER4 */
-#define BOARD_BOOTCLOCKPLL150M_DAC0_CLOCK             0UL            /* Clock consumers of DAC0_clock output : DAC0 */
+#define BOARD_BOOTCLOCKPLL150M_DAC0_CLOCK             48000000UL     /* Clock consumers of DAC0_clock output : DAC0 */
 #define BOARD_BOOTCLOCKPLL150M_DAC1_CLOCK             0UL            /* Clock consumers of DAC1_clock output : DAC1 */
 #define BOARD_BOOTCLOCKPLL150M_DAC2_CLOCK             0UL            /* Clock consumers of DAC2_clock output : DAC2 */
 #define BOARD_BOOTCLOCKPLL150M_EMVSIM0_CLOCK          0UL            /* Clock consumers of EMVSIM0_clock output : EMVSIM0 */
