@@ -16,8 +16,8 @@ Void init_filtros(void);
 #define buffer_size 512
 #define TEST_LENGTH_SAMPLES 1
 #define BLOCK_SIZE 1
-#define NUM_TAPS_X                                                             \
-  X(número del filtro a considerar esto se puede definir en FiltrosTP2.h)
+#define NUM_TAPS_X
+// X(número del filtro a considerar esto se puede definir en FiltrosTP2.h)
 
 /*Definimos las variables globales, algunas pueden ser del tipo “volatile” o
  * “static” si así lo consideran*/
