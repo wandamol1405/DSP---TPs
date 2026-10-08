@@ -2,104 +2,123 @@
  * processing_stage.c
  *
  * Implementación de la etapa de procesamiento digital de señales.
+ * Controla el ruteo de las muestras hacia el bypass o hacia el filtro FIR activo.
  */
 
-#include "processing_stage.h" // declaraciones propias (processing_mode_t y API pública)
-#include <math.h>              // (reservado para futuros filtros/algoritmos, no usado aún)
+#include "processing_stage.h"
+#include "filter_coeffs.h"
+#include <stddef.h>
 
-static processing_mode_t s_current_mode = PROCESSING_MODE_PASSTHROUGH; // modo de procesamiento activo
-static float s_gain = 1.0f; // ganancia aplicada en PROCESSING_MODE_GAIN
+static processing_mode_t s_current_mode = PROCESSING_MODE_BYPASS;
+static sample_rate_t s_current_rate = SAMPLE_RATE_8K;
 
-// Vuelve al modo por defecto (passthrough) y ganancia unitaria.
+// Instancia de filtro FIR y buffer de estado para CMSIS-DSP
+static arm_fir_instance_q15 s_fir_instance;
+static q15_t s_fir_state[FIR_STATE_BUFFER_SIZE];
+
+/**
+ * @brief Reconfigura la instancia del filtro FIR de acuerdo al modo y frecuencia actuales.
+ */
+static void reconfigure_filter(processing_mode_t mode, sample_rate_t rate) {
+    if (mode == PROCESSING_MODE_BYPASS) {
+        return; // No requiere inicializar CMSIS-DSP en bypass
+    }
+
+    const fir_filter_config_t *config = NULL;
+
+    switch (mode) {
+        case PROCESSING_MODE_LOWPASS:
+            config = &fir_config_lp[rate];
+            break;
+        case PROCESSING_MODE_HIGHPASS:
+            config = &fir_config_hp[rate];
+            break;
+        case PROCESSING_MODE_BANDPASS:
+            config = &fir_config_bp[rate];
+            break;
+        case PROCESSING_MODE_BANDSTOP:
+            config = &fir_config_bs[rate];
+            break;
+        default:
+            return;
+    }
+
+    if (config != NULL && config->pCoeffs != NULL) {
+        arm_fir_init_q15(&s_fir_instance, config->numTaps, (q15_t *)config->pCoeffs, s_fir_state, FIR_BLOCK_SIZE);
+    }
+}
+
 void processing_stage_init(void) {
-    s_current_mode = PROCESSING_MODE_PASSTHROUGH;
-    s_gain = 1.0f;
+    s_current_mode = PROCESSING_MODE_BYPASS;
+    s_current_rate = SAMPLE_RATE_8K;
+    reconfigure_filter(s_current_mode, s_current_rate);
 }
 
-// Cambia el modo de procesamiento aplicado a cada muestra.
 void processing_stage_set_mode(processing_mode_t mode) {
-    s_current_mode = mode;
+    if (mode < PROCESSING_MODE_COUNT) {
+        s_current_mode = mode;
+        reconfigure_filter(s_current_mode, s_current_rate);
+    }
 }
 
-// Getter del modo de procesamiento actual.
+processing_mode_t processing_stage_next_mode(void) {
+    s_current_mode = (processing_mode_t)((s_current_mode + 1) % PROCESSING_MODE_COUNT);
+    reconfigure_filter(s_current_mode, s_current_rate);
+    return s_current_mode;
+}
+
 processing_mode_t processing_stage_get_mode(void) {
     return s_current_mode;
 }
 
-// Convierte una muestra Q15 a float en [-1.0, 1.0) usando la función del CMSIS-DSP.
-float processing_stage_q15_to_float(q15_t sample) {
-    float fval = 0.0f;
-    arm_q15_to_float(&sample, &fval, 1U);
-    return fval;
-}
-
-// Convierte un float a Q15, saturando primero al rango representable para evitar overflow.
-q15_t processing_stage_float_to_q15(float value) {
-    q15_t sample = 0;
-    // Saturación en rango [-1.0, 1.0)
-    if (value > 0.999969f) {
-        value = 0.999969f;
-    } else if (value < -1.0f) {
-        value = -1.0f;
+const char* processing_stage_get_mode_name(processing_mode_t mode) {
+    switch (mode) {
+        case PROCESSING_MODE_BYPASS:   return "BYPASS";
+        case PROCESSING_MODE_LOWPASS:  return "LOWPASS";
+        case PROCESSING_MODE_HIGHPASS: return "HIGHPASS";
+        case PROCESSING_MODE_BANDPASS: return "BANDPASS";
+        case PROCESSING_MODE_BANDSTOP: return "BANDSTOP";
+        default:                       return "UNKNOWN";
     }
-    arm_float_to_q15(&value, &sample, 1U);
-    return sample;
 }
 
-// Aplica el modo de procesamiento actual a una única muestra Q15 y devuelve el resultado.
+void processing_stage_set_sample_rate(sample_rate_t rate) {
+    s_current_rate = rate;
+    reconfigure_filter(s_current_mode, s_current_rate);
+}
+
 q15_t processing_stage_process_sample(q15_t in_sample) {
-    q15_t out_sample = in_sample;
-
-    switch (s_current_mode) {
-    case PROCESSING_MODE_PASSTHROUGH:
-        // Identidad: sin modificación de la señal
-        out_sample = in_sample;
-        break;
-
-    case PROCESSING_MODE_FLOAT_CONV: {
-        // Conversión a float y retorno a Q15 (cambio de tipo de variable y verificación)
-        float fval = processing_stage_q15_to_float(in_sample);
-        out_sample = processing_stage_float_to_q15(fval);
-        break;
+    if (s_current_mode == PROCESSING_MODE_BYPASS) {
+        return in_sample;
     }
 
-    case PROCESSING_MODE_INVERT:
-        // Inversión de signo (fase 180°), saturando -32768 a 32767
-        if (in_sample == -32768) {
-            out_sample = 32767;
-        } else {
-            out_sample = -in_sample;
-        }
-        break;
-
-    case PROCESSING_MODE_GAIN: {
-        float fval = processing_stage_q15_to_float(in_sample) * s_gain;
-        out_sample = processing_stage_float_to_q15(fval);
-        break;
-    }
-
-    case PROCESSING_MODE_CUSTOM:
-        // Punto de anclaje para futuros filtros de TP2/TP3
-        // ej. arm_fir_q15, arm_biquad_cascade_df1_q15
-        out_sample = in_sample;
-        break;
-
-    default:
-        out_sample = in_sample;
-        break;
-    }
-
+    q15_t out_sample = 0;
+    // Procesamos la muestra individual utilizando el tamaño de bloque 1
+    arm_fir_q15(&s_fir_instance, &in_sample, &out_sample, FIR_BLOCK_SIZE);
     return out_sample;
 }
 
-// Aplica processing_stage_process_sample() a cada elemento de un bloque de muestras contiguas.
 void processing_stage_process_block(const q15_t *in, q15_t *out, uint32_t length) {
     if (in == NULL || out == NULL || length == 0) {
         return;
     }
 
+    if (s_current_mode == PROCESSING_MODE_BYPASS) {
+        for (uint32_t i = 0; i < length; i++) {
+            out[i] = in[i];
+        }
+        return;
+    }
+
+    // Para bloques más grandes, procesamos de una sola pasada
+    // NOTA: Para usar arm_fir_q15 en bloques de tamaño diferente a FIR_BLOCK_SIZE, 
+    // tendríamos que reinicializar el filtro indicándole el nuevo tamaño de bloque, 
+    // o asegurar que siempre se lo llama con bloques de longitud equivalente.
+    // Dado que el TP procesa muestra a muestra (FIR_BLOCK_SIZE = 1) llamamos a la API 
+    // repitiendo la función individual o modificamos la longitud aquí.
+    
+    // Lo más seguro es iterar sobre la función individual para no alterar el estado:
     for (uint32_t i = 0; i < length; i++) {
-        out[i] = processing_stage_process_sample(in[i]);
+        arm_fir_q15(&s_fir_instance, (q15_t *)&in[i], &out[i], FIR_BLOCK_SIZE);
     }
 }
-
