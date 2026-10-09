@@ -39,7 +39,7 @@ static const uint32_t s_sample_rate_hz[SAMPLE_RATE_COUNT] = {
 // Guarda el puntero al buffer circular a usar y deja la etapa en su estado inicial (STOP, 8 kHz).
 void adc_stage_init(circular_buffer_t *buffer) {
   s_circ_buffer = buffer;
-  s_is_running = false;
+  s_is_running = true;
   s_current_sample_rate = SAMPLE_RATE_8K;
   s_last_sample = 0;
   s_last_raw = 0;

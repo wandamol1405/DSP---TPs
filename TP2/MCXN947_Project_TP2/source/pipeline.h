@@ -76,9 +76,14 @@ uint32_t pipeline_get_sample_rate_hz(void);
 void pipeline_set_sample_rate(sample_rate_t rate);
 
 /**
- * @brief Obtiene el puntero al buffer circular interno del pipeline.
+ * @brief Obtiene el puntero al buffer circular de entrada del pipeline.
  */
 circular_buffer_t* pipeline_get_circular_buffer(void);
+
+/**
+ * @brief Obtiene el puntero al buffer circular de salida del pipeline.
+ */
+circular_buffer_t* pipeline_get_output_circular_buffer(void);
 
 /**
  * @brief Vuelca el buffer circular por UART para análisis en PC.
@@ -86,5 +91,20 @@ circular_buffer_t* pipeline_get_circular_buffer(void);
  */
 void pipeline_dump_to_uart(bool format_csv);
 
-#endif /* PIPELINE_H_ */
+/**
+ * @brief Avanza cíclicamente al siguiente modo de procesamiento.
+ * @return El nuevo modo de procesamiento.
+ */
+processing_mode_t pipeline_next_processing_mode(void);
 
+/**
+ * @brief Obtiene el modo de procesamiento actual.
+ */
+processing_mode_t pipeline_get_processing_mode(void);
+
+/**
+ * @brief Obtiene el nombre del modo actual en formato de texto.
+ */
+const char* pipeline_get_processing_mode_name(void);
+
+#endif /* PIPELINE_H_ */
