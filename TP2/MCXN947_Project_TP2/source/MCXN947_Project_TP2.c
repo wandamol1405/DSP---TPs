@@ -27,6 +27,7 @@
 #include "dac_stage.h"        // etapa de salida analógica (incluida por completitud del pipeline)
 #include "uart_stage.h"       // comandos por UART: try_getchar, streaming, is_streaming_enabled
 #include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
+#include "ui.h"               // interfaz gráfica (OLED): API independiente de U8g2 y del bus
 
 /* Flags de notificación para impresión en el loop principal (se setean desde ISRs o
  * desde ProcessUartCommands, y se consumen y limpian en el while(1) de main) */
@@ -34,6 +35,48 @@ static volatile bool adc_print_flag = false;    // pide imprimir el estado RUN/S
 static volatile bool freq_print_flag = false;   // pide imprimir la frecuencia de muestreo actual
 static volatile bool buffer_dump_flag = false;  // pide volcar el buffer circular por UART
 static volatile bool dsp_mode_print_flag = false; // pide imprimir el modo de procesamiento DSP actual
+static volatile bool ui_update_flag = false;    // pide sincronizar la interfaz gráfica con el estado DSP
+
+/* Parámetros del filtro que muestra la interfaz, por modo de procesamiento DSP.
+ * Reflejan lo documentado en processing_stage.h (los coeficientes de filter_coeffs.h son aún
+ * placeholders): actualizar esta tabla si cambian las frecuencias de diseño.
+ * Pasa banda: Fc = frecuencia central (f1 + f2) / 2 y BW = f2 - f1. */
+#define BANDPASS_F_LOW_HZ  35u
+#define BANDPASS_F_HIGH_HZ 3500u
+
+typedef struct {
+  ui_filter_t ui_type; // tipo de filtro que la UI debe representar
+  uint32_t fc_hz;      // frecuencia de corte a mostrar (UI_FREQUENCY_NONE si no aplica)
+  uint32_t bw_hz;      // ancho de banda a mostrar (UI_FREQUENCY_NONE si no aplica)
+} dsp_mode_ui_info_t;
+
+static const dsp_mode_ui_info_t s_mode_ui_info[PROCESSING_MODE_COUNT] = {
+    [PROCESSING_MODE_BYPASS]   = {UI_FILTER_BYPASS,   UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
+    [PROCESSING_MODE_LOWPASS]  = {UI_FILTER_LOWPASS,  3600u,             UI_FREQUENCY_NONE},
+    [PROCESSING_MODE_HIGHPASS] = {UI_FILTER_HIGHPASS, 35u,               UI_FREQUENCY_NONE},
+    [PROCESSING_MODE_BANDPASS] = {UI_FILTER_BANDPASS, (BANDPASS_F_LOW_HZ + BANDPASS_F_HIGH_HZ) / 2u,
+                                  BANDPASS_F_HIGH_HZ - BANDPASS_F_LOW_HZ},
+    [PROCESSING_MODE_BANDSTOP] = {UI_FILTER_BANDSTOP, 50u,               15u},
+};
+
+/**
+ * @brief Informa a la UI el estado actual del DSP (solo lectura del DSP, nunca lo modifica).
+ *
+ * Solo registra valores en la UI (ui_set_* no toca el display); la comunicación con el OLED
+ * ocurre en ui_process(). La UI ignora los valores que no cambiaron, por lo que es seguro
+ * llamarla con el estado completo ante cualquier cambio.
+ */
+static void UpdateUiFromDsp(void) {
+  processing_mode_t mode = pipeline_get_processing_mode();
+  if (mode >= PROCESSING_MODE_COUNT) {
+    return;
+  }
+
+  ui_set_sampling_frequency(pipeline_get_sample_rate_hz());
+  ui_set_filter_type(s_mode_ui_info[mode].ui_type);
+  ui_set_cutoff_frequency(s_mode_ui_info[mode].fc_hz);
+  ui_set_bandwidth(s_mode_ui_info[mode].bw_hz);
+}
 
 /**
  * @brief Configura el color del LED según la frecuencia de muestreo.
@@ -101,6 +144,7 @@ static void ProcessUartCommands(void) {
       sample_rate_t next = pipeline_next_sample_rate();
       SetLedForSampleRate(next);
       freq_print_flag = true;
+      ui_update_flag = true;
       break;
     }
 
@@ -141,6 +185,7 @@ static void ProcessUartCommands(void) {
       // Avanza cíclicamente al siguiente modo de procesamiento DSP (Filtros FIR)
       pipeline_next_processing_mode();
       dsp_mode_print_flag = true;
+      ui_update_flag = true;
       break;
     }
 
@@ -195,6 +240,13 @@ int main(void) {
   pipeline_set_sample_rate(initial_rate);
 
   freq_print_flag = true;
+  ui_update_flag = true;
+
+  /* Interfaz gráfica (OLED SSD1306 por LPI2C3). Es opcional: si el display no responde,
+   * ui_init() devuelve false, la UI queda deshabilitada y el DSP sigue funcionando igual. */
+  if (!ui_init()) {
+    PRINTF("[UI] Display OLED no detectado (I2C 0x3C en J2[15]/J2[17]). Continuando sin interfaz grafica.\r\n");
+  }
 
   while (1) {
     /* 1. Tarea periódica de transmisión UART (Serial Plotter) */
@@ -238,6 +290,15 @@ int main(void) {
       }
       dsp_mode_print_flag = false;
     }
+
+    /* 7. Interfaz gráfica: la aplicación solo informa los valores actuales del DSP y la UI aplica
+     *    en el OLED únicamente los cambios pendientes (regiones parciales). Nunca se llama a la UI
+     *    desde una ISR: las ISRs solo levantan ui_update_flag. */
+    if (ui_update_flag) {
+      ui_update_flag = false; /* se limpia antes de leer el estado: un cambio posterior vuelve a levantarla */
+      UpdateUiFromDsp();
+    }
+    ui_process();
   }
 
   return 0;
@@ -253,6 +314,7 @@ void GPIO0_INT_0_IRQHANDLER(void) {
   sample_rate_t new_rate = pipeline_next_sample_rate();
   SetLedForSampleRate(new_rate);
   freq_print_flag = true;
+  ui_update_flag = true;
 
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags0, 0U);
 
@@ -270,6 +332,7 @@ void GPIO0_INT_1_IRQHANDLER(void) {
 
   pipeline_next_processing_mode();
   dsp_mode_print_flag = true;
+  ui_update_flag = true;
 
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags1, 1U);
 

@@ -278,6 +278,7 @@ outputs:
 - {id: CLK_48M_clock.outFreq, value: 48 MHz}
 - {id: CTIMER0_clock.outFreq, value: 150 MHz}
 - {id: DAC0_clock.outFreq, value: 48 MHz}
+- {id: FLEXCOMM3_clock.outFreq, value: 12 MHz}
 - {id: FRO_12M_clock.outFreq, value: 12 MHz}
 - {id: FRO_HF_clock.outFreq, value: 48 MHz}
 - {id: MAIN_clock.outFreq, value: 150 MHz}
@@ -293,6 +294,7 @@ settings:
 - {id: ADC1CLKDIV_HALT, value: Enable}
 - {id: CTIMER0CLKDIV_HALT, value: Enable}
 - {id: DAC0CLKDIV_HALT, value: Enable}
+- {id: FLEXCOMM3CLKDIV_HALT, value: Enable}
 - {id: SCG.PLL0M_MULT.scale, value: '50', locked: true}
 - {id: SCG.PLL0SRCSEL.sel, value: SCG.FIRC_48M}
 - {id: SCG.PLL0_NDIV.scale, value: '8', locked: true}
@@ -300,6 +302,7 @@ settings:
 - {id: SYSCON.ADC1CLKSEL.sel, value: SCG.FRO_HF}
 - {id: SYSCON.CTIMERCLKSEL0.sel, value: SCG.PLL0_CLK}
 - {id: SYSCON.DAC0CLKSEL.sel, value: SCG.FRO_HF}
+- {id: SYSCON.FCCLKSEL3.sel, value: SCG.FRO_12M}
 - {id: SYSCON.FLEXSPICLKSEL.sel, value: NO_CLOCK}
 - {id: SYSCON.FREQMEREFCLKSEL.sel, value: SYSCON.evtg_out0a}
 - {id: SYSCON.FREQMETARGETCLKSEL.sel, value: SYSCON.evtg_out0a}
@@ -358,12 +361,14 @@ void BOARD_BootClockPLL150M(void)
     CLOCK_AttachClk(kFRO_HF_to_ADC1);                 /*!< Switch ADC1 to FRO_HF */
     CLOCK_AttachClk(kFRO_HF_to_DAC0);                 /*!< Switch DAC0 to FRO_HF */
     CLOCK_AttachClk(kPLL0_to_CTIMER0);                 /*!< Switch CTIMER0 to PLL0 */
+    CLOCK_AttachClk(kFRO12M_to_FLEXCOMM3);                 /*!< Switch FLEXCOMM3 to FRO12M */
 
     /*!< Set up dividers */
     CLOCK_SetClkDiv(kCLOCK_DivAhbClk, 1U);           /*!< Set AHBCLKDIV divider to value 1 */
     CLOCK_SetClkDiv(kCLOCK_DivAdc1Clk, 1U);           /*!< Set ADC1CLKDIV divider to value 1 */
     CLOCK_SetClkDiv(kCLOCK_DivDac0Clk, 1U);           /*!< Set DAC0CLKDIV divider to value 1 */
     CLOCK_SetClkDiv(kCLOCK_DivCtimer0Clk, 1U);           /*!< Set CTIMER0CLKDIV divider to value 1 */
+    CLOCK_SetClkDiv(kCLOCK_DivFlexcom3Clk, 1U);           /*!< Set FLEXCOMM3CLKDIV divider to value 1 */
 
     /* Set SystemCoreClock variable */
     SystemCoreClock = BOARD_BOOTCLOCKPLL150M_CORE_CLOCK;
