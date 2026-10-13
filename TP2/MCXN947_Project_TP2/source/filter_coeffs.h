@@ -34,32 +34,32 @@ typedef struct {
 // ============================================================================
 
 // Filtro Pasa Bajos (LP)
-#define NUM_TAPS_LP_8K  31
-#define NUM_TAPS_LP_16K 31
-#define NUM_TAPS_LP_22K 31
-#define NUM_TAPS_LP_44K 31
-#define NUM_TAPS_LP_48K 31
+#define NUM_TAPS_LP_8K  32
+#define NUM_TAPS_LP_16K 32
+#define NUM_TAPS_LP_22K 32
+#define NUM_TAPS_LP_44K 32
+#define NUM_TAPS_LP_48K 32
 
 // Filtro Pasa Altos (HP)
-#define NUM_TAPS_HP_8K  31
-#define NUM_TAPS_HP_16K 31
-#define NUM_TAPS_HP_22K 31
-#define NUM_TAPS_HP_44K 31
-#define NUM_TAPS_HP_48K 31
+#define NUM_TAPS_HP_8K  32
+#define NUM_TAPS_HP_16K 32
+#define NUM_TAPS_HP_22K 32
+#define NUM_TAPS_HP_44K 32
+#define NUM_TAPS_HP_48K 32
 
 // Filtro Pasa Banda (BP)
-#define NUM_TAPS_BP_8K  31
-#define NUM_TAPS_BP_16K 31
-#define NUM_TAPS_BP_22K 31
-#define NUM_TAPS_BP_44K 31
-#define NUM_TAPS_BP_48K 31
+#define NUM_TAPS_BP_8K  32
+#define NUM_TAPS_BP_16K 32
+#define NUM_TAPS_BP_22K 32
+#define NUM_TAPS_BP_44K 32
+#define NUM_TAPS_BP_48K 32
 
 // Filtro Elimina Banda (BS)
-#define NUM_TAPS_BS_8K  31
-#define NUM_TAPS_BS_16K 31
-#define NUM_TAPS_BS_22K 31
-#define NUM_TAPS_BS_44K 31
-#define NUM_TAPS_BS_48K 31
+#define NUM_TAPS_BS_8K  32
+#define NUM_TAPS_BS_16K 32
+#define NUM_TAPS_BS_22K 32
+#define NUM_TAPS_BS_44K 32
+#define NUM_TAPS_BS_48K 32
 
 // ============================================================================
 // Arreglos de coeficientes Q15 - Mocks (Filtro Identidad / Impulso unitario)
@@ -68,7 +68,7 @@ typedef struct {
 // que el filtro se comporte inicialmente como un passthrough retrasado o directo.
 
 // Helper macro para mock
-#define MOCK_COEFFS_31 { 32767, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+#define MOCK_COEFFS_31 { 32767, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 // Pasa Bajos
 static const q15_t coeffs_lp_8k [NUM_TAPS_LP_8K]  = MOCK_COEFFS_31;
