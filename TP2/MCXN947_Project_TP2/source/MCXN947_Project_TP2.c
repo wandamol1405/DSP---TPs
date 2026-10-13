@@ -33,6 +33,7 @@
 static volatile bool adc_print_flag = false;    // pide imprimir el estado RUN/STOP
 static volatile bool freq_print_flag = false;   // pide imprimir la frecuencia de muestreo actual
 static volatile bool buffer_dump_flag = false;  // pide volcar el buffer circular por UART
+static volatile bool dsp_mode_print_flag = false; // pide imprimir el modo de procesamiento DSP actual
 
 /**
  * @brief Configura el color del LED según la frecuencia de muestreo.
@@ -137,14 +138,9 @@ static void ProcessUartCommands(void) {
 
     case 'm':
     case 'M': {
-      // Avanza cíclicamente al siguiente modo de procesamiento DSP y lo confirma por consola
-      processing_mode_t cur = processing_stage_get_mode();
-      processing_mode_t next = (processing_mode_t)((cur + 1) % 4);
-      processing_stage_set_mode(next);
-      const char *mode_names[] = {"PASSTHROUGH", "FLOAT_CONV", "INVERT", "GAIN"};
-      if (!uart_stage_is_streaming_enabled()) {
-        PRINTF("[DSP] Modo de procesamiento: %s\r\n", mode_names[next]);
-      }
+      // Avanza cíclicamente al siguiente modo de procesamiento DSP (Filtros FIR)
+      pipeline_next_processing_mode();
+      dsp_mode_print_flag = true;
       break;
     }
 
@@ -155,11 +151,11 @@ static void ProcessUartCommands(void) {
       if (!uart_stage_is_streaming_enabled()) {
         PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
         PRINTF("  'r': Alternar RUN / STOP\r\n");
-        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k)\r\n");
+        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k) [SW3]\r\n");
         PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
         PRINTF("  'p': Activar/Desactivar streaming continuo para Serial Plotter\r\n");
         PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
-        PRINTF("  'm': Alternar modo de procesamiento DSP\r\n");
+        PRINTF("  'm': Alternar modo de procesamiento DSP (Filtros/Bypass) [SW2]\r\n");
         PRINTF("  'h': Mostrar esta ayuda\r\n");
         PRINTF("=================================\r\n\r\n");
       }
@@ -185,8 +181,8 @@ int main(void) {
 #endif
 
   PRINTF("\r\n========================================\r\n");
-  PRINTF("  TP1 DSP - FRDM-MCXN947 Modularizado\r\n");
-  PRINTF("  Etapas: ADC -> Buffer -> DSP -> DAC/UART\r\n");
+  PRINTF("  TP2 DSP - Filtros FIR (FRDM-MCXN947)\r\n");
+  PRINTF("  Etapas: ADC -> Buffer -> FIR -> DAC/UART\r\n");
   PRINTF("  Envie 'h' para ver comandos por consola\r\n");
   PRINTF("========================================\r\n\r\n");
 
@@ -234,6 +230,14 @@ int main(void) {
       }
       buffer_dump_flag = false;
     }
+
+    /* 6. Notificación de modo DSP */
+    if (dsp_mode_print_flag) {
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[DSP] Modo/Filtro activo: %s\r\n", pipeline_get_processing_mode_name());
+      }
+      dsp_mode_print_flag = false;
+    }
   }
 
   return 0;
@@ -264,8 +268,8 @@ void GPIO0_INT_0_IRQHANDLER(void) {
 void GPIO0_INT_1_IRQHANDLER(void) {
   uint32_t pin_flags1 = GPIO_GpioGetInterruptChannelFlags(GPIO0, 1U);
 
-  pipeline_toggle_run_stop();
-  adc_print_flag = true;
+  pipeline_next_processing_mode();
+  dsp_mode_print_flag = true;
 
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags1, 1U);
 
