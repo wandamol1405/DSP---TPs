@@ -47,12 +47,6 @@
 
 #define MAX_FIR_TAPS 1490
 
-/* Procesamiento muestra a muestra */
-#define FIR_BLOCK_SIZE 1
-
-/* Con ARM_MATH_DSP (Cortex-M33), arm_fir_init_q15 limpia numTaps + blockSize elementos */
-#define FIR_STATE_BUFFER_SIZE (MAX_FIR_TAPS + FIR_BLOCK_SIZE)
-
 typedef struct {
     const q15_t *pCoeffs;
     uint16_t numTaps;

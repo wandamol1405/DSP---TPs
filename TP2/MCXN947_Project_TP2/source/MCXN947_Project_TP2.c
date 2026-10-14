@@ -231,7 +231,16 @@ int main(void) {
       buffer_dump_flag = false;
     }
 
-    /* 6. Notificación de modo DSP */
+    /* 6. Aviso de sobrecarga: el filtro no llegó a procesar un bloque a tiempo y se pasó a BYPASS */
+    if (pipeline_take_overrun()) {
+      if (!uart_stage_is_streaming_enabled()) {
+        PRINTF("[DSP] Sobrecarga: el filtro no entra en tiempo real a %u Hz -> BYPASS (bloques perdidos: %u)\r\n",
+               (unsigned int)pipeline_get_sample_rate_hz(), (unsigned int)pipeline_get_overrun_count());
+      }
+      dsp_mode_print_flag = true;
+    }
+
+    /* 7. Notificación de modo DSP */
     if (dsp_mode_print_flag) {
       if (!uart_stage_is_streaming_enabled()) {
         PRINTF("[DSP] Modo/Filtro activo: %s\r\n", pipeline_get_processing_mode_name());
@@ -276,6 +285,15 @@ void GPIO0_INT_1_IRQHANDLER(void) {
 #if defined __CORTEX_M && (__CORTEX_M == 4U)
   __DSB();
 #endif
+}
+
+/**
+ * @brief Manejador de PendSV (prioridad mínima, la configura pipeline_init).
+ *        Lo dispara pipeline_step cada vez que se completa un bloque de muestras:
+ *        el filtrado FIR se hace acá, fuera de la ISR del ADC.
+ */
+void PendSV_Handler(void) {
+  pipeline_process_block();
 }
 
 /**

@@ -77,8 +77,9 @@ NORMALIZAR_PICO_0DB = true;
 % así que se agrega un coeficiente 0 al final.
 PAD_PAR_CMSIS_Q15 = true;
 
-% Estimación de carga con arm_fir_q15 y blockSize = 1 (MAC + desplazamiento
-% del buffer de estados). Es una ESTIMACIÓN: medir en la placa con DWT->CYCCNT.
+% Estimación de carga con arm_fir_q15 procesando por bloques
+% (PROCESSING_BLOCK_SIZE en processing_stage.h). Es una ESTIMACIÓN: medir en la
+% placa con DWT->CYCCNT (ciclos por bloque / (taps * muestras del bloque)).
 CICLOS_POR_TAP = 3;
 F_CPU = 150e6;            % Cortex-M33 de la MCXN947
 
@@ -339,11 +340,8 @@ fprintf(fid, ' */\n\n#ifndef FILTER_COEFFS_H\n#define FILTER_COEFFS_H\n\n');
 fprintf(fid, '#include "arm_math.h"\n\n');
 fprintf(fid, '#define MAX_FIR_TAPS %d\n\n', max_taps);
 
-% Definiciones que usa processing_stage.c
-fprintf(fid, '/* Procesamiento muestra a muestra */\n');
-fprintf(fid, '#define FIR_BLOCK_SIZE 1\n\n');
-fprintf(fid, '/* Con ARM_MATH_DSP (Cortex-M33), arm_fir_init_q15 limpia numTaps + blockSize elementos */\n');
-fprintf(fid, '#define FIR_STATE_BUFFER_SIZE (MAX_FIR_TAPS + FIR_BLOCK_SIZE)\n\n');
+% Definiciones que usa processing_stage.c (el tamaño de bloque y el buffer de
+% estado se definen allí, junto con PROCESSING_BLOCK_SIZE)
 fprintf(fid, 'typedef struct {\n    const q15_t *pCoeffs;\n    uint16_t numTaps;\n} fir_filter_config_t;\n\n');
 
 for i = 1:numel(filt)
