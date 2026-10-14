@@ -26,11 +26,29 @@
 void pipeline_init(void);
 
 /**
- * @brief Ejecuta un paso del pipeline. Se invoca al ritmo de la tasa de muestreo.
- *        En RUN: Adquiere del ADC -> guarda en buffer -> procesa con DSP -> envía a DAC y UART.
- *        En STOP: Lee del buffer circular (loop) -> procesa con DSP -> envía a DAC y UART.
+ * @brief Ejecuta un paso del pipeline. Se invoca al ritmo de la tasa de muestreo (ISR del ADC).
+ *        En RUN toma la muestra del ADC; en STOP, del buffer circular (loop). La guarda en el
+ *        bloque en curso y envía al DAC la muestra correspondiente del último bloque filtrado.
+ *        Al completar un bloque de PROCESSING_BLOCK_SIZE muestras dispara PendSV para filtrarlo.
  */
 void pipeline_step(void);
+
+/**
+ * @brief Filtra el bloque completado por pipeline_step y lo envía al buffer de salida y a la UART.
+ *        Se llama desde PendSV_Handler.
+ */
+void pipeline_process_block(void);
+
+/**
+ * @brief Indica si algún bloque no llegó a filtrarse a tiempo desde la última consulta
+ *        (en ese caso el pipeline pasó a BYPASS). Limpia el aviso.
+ */
+bool pipeline_take_overrun(void);
+
+/**
+ * @brief Cantidad total de bloques que no llegaron a filtrarse a tiempo.
+ */
+uint32_t pipeline_get_overrun_count(void);
 
 /**
  * @brief Inicia la adquisición y procesamiento continuo (Modo RUN).
