@@ -579,21 +579,49 @@ def main():
     fs_label = ['8k', '16k', '22k', '44k', '48k']
     fs_list = [8000, 16000, 22000, 44000, 48000]
 
-    # Especificación de los 4 filtros del TP2. Fc/Fr/Bw/Astop los da la
-    # consigna; df (ancho de transición) es una decisión de diseño propia,
-    # elegida acá para que la banda de paso/rechazo quede razonablemente
-    # cerca del corte pedido -- cambiar libremente si hace falta otro
-    # trade-off ancho de transición / cantidad de taps.
+    # =========================================================================
+    # PARÁMETROS DE DISEÑO CONFIGURABLES
+    # =========================================================================
+
+    # --- 1. Pasa Bajos (LP) ---
+    # Consigna: Fc = 3600 Hz, Astop >= 30 dB
+    fc_lp = 3600          # Frecuencia de corte a -6 dB en Hz (consigna)
+    astop_lp = 30         # Atenuación mínima requerida en la banda de rechazo en dB (consigna)
+    df_lp = 400           # Ancho de la banda de transición en Hz (transición de 3400 a 3800 Hz)
+
+    # --- 2. Pasa Altos (HP) ---
+    # Consigna: Fc = 35 Hz, Astop >= 30 dB
+    fc_hp = 35            # Frecuencia de corte a -6 dB en Hz (consigna)
+    astop_hp = 30         # Atenuación mínima requerida en la banda de rechazo en dB (consigna)
+    df_hp = 60            # Ancho de transición en Hz (rechazo <= 5 Hz, paso >= 65 Hz)
+
+    # --- 3. Pasa Banda (BP) ---
+    # Consigna: Fc1 = 35 Hz, Fc2 = 3500 Hz, Astop >= 30 dB
+    fc_bp = [35, 3500]    # Frecuencias de corte inferior y superior a -6 dB en Hz (consigna)
+    astop_bp = 30         # Atenuación mínima requerida en la banda de rechazo en dB (consigna)
+    df_bp = [60, 400]     # Ancho de transición inferior (60 Hz) y superior (400 Hz)
+
+    # --- 4. Elimina Banda / Notch (BS) ---
+    # Consigna: Fr = 50 Hz, BW = 15 Hz (rechazo [42.5, 57.5] Hz), Astop >= 25 dB
+    fr_bs = 50            # Frecuencia central de rechazo en Hz (consigna)
+    bw_bs = 15            # Ancho de banda de rechazo en Hz (consigna: 42.5 a 57.5 Hz)
+    astop_bs = 25         # Atenuación mínima requerida en la banda de rechazo en dB (consigna)
+    # Transición asimétrica: df_lo=35 Hz hacia continua (paso [0, 7.5] Hz) y
+    # df_hi=90 Hz hacia altas frecuencias para reducir fuertemente la cantidad de taps
+    df_bs = [35, 90]
+
+    # Cortes a -6 dB para elimina banda en base a Fr, BW y df
+    cutoff_bs = cutoff_bandstop_fr_bw(fr=fr_bs, bw=bw_bs, df=df_bs)
+
     filtros = [
         dict(key='lp', desc='Pasa bajos',    ftype='lowpass',
-             cutoff=3600,                               df=400,     astop=30),
+             cutoff=fc_lp,                              df=df_lp,     astop=astop_lp),
         dict(key='hp', desc='Pasa altos',    ftype='highpass',
-             cutoff=35,                                 df=50,      astop=30),
+             cutoff=fc_hp,                              df=df_hp,      astop=astop_hp),
         dict(key='bp', desc='Pasa banda',    ftype='bandpass',
-             cutoff=[35, 3500],                         df=[50, 400], astop=30),
+             cutoff=fc_bp,                              df=df_bp,     astop=astop_bp),
         dict(key='bs', desc='Elimina banda', ftype='bandstop',
-             cutoff=cutoff_bandstop_fr_bw(fr=50, bw=15, df=20),
-             df=20, astop=25),
+             cutoff=cutoff_bs,                          df=df_bs,      astop=astop_bs),
     ]
 
     # El .h se escribe directo en el proyecto del firmware (ruta relativa a
