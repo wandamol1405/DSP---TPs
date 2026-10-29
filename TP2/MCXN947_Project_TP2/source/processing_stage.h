@@ -15,12 +15,12 @@
 #include "adc_stage.h" // Para usar sample_rate_t
 
 /*
- * Tamaño de bloque del FIR, en muestras. pipeline_step() llama a
- * processing_stage_process_block() una vez por muestra del ADC (sin acumular),
- * así que queda en 1: cada muestra se filtra en el momento, sin latencia extra
- * de bufferizado.
+ * Tamaño de bloque del FIR, en muestras. El pipeline acumula PROCESSING_BLOCK_SIZE
+ * muestras del ADC y las filtra juntas: arm_fir_q15 copia el estado una vez por bloque
+ * (no una por muestra) y usa SIMD. Agrega 2 bloques de latencia (64 muestras = 8 ms a
+ * 8 kHz, 1.3 ms a 48 kHz). Debe ser múltiplo de 4 (camino rápido de arm_fir_q15).
  */
-#define PROCESSING_BLOCK_SIZE 1U
+#define PROCESSING_BLOCK_SIZE 32U
 
 /**
  * @brief Modos de operación del bloque de procesamiento (TP2).
