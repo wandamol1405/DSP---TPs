@@ -116,6 +116,10 @@ extern "C"
   #define ARM_MATH_DSP                   1
 #endif
 
+#ifndef ARM_MATH_LOOPUNROLL
+  #define ARM_MATH_LOOPUNROLL            1
+#endif
+
 #if defined(ARM_MATH_NEON)
   #if defined(_MSC_VER) && defined(_M_ARM64EC)
     #include <arm64_neon.h>
