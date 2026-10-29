@@ -79,7 +79,7 @@ __STATIC_FORCEINLINE q31_t read_q15x2 (
   q31_t val;
 
 #ifdef __ARM_FEATURE_UNALIGNED
-  memcpy (&val, pQ15, 4);
+  __builtin_memcpy(&val, pQ15, 4);
 #else
   val = (pQ15[1] << 16) | (pQ15[0] & 0x0FFFF) ;
 #endif
@@ -112,7 +112,7 @@ __STATIC_FORCEINLINE void write_q15x2_ia (
 {
   q31_t val = value;
 #ifdef __ARM_FEATURE_UNALIGNED
-  memcpy (*pQ15, &val, 4);
+  __builtin_memcpy(*pQ15, &val, 4);
 #else
   (*pQ15)[0] = (q15_t)(val & 0x0FFFF);
   (*pQ15)[1] = (q15_t)((val >> 16) & 0x0FFFF);
@@ -133,7 +133,7 @@ __STATIC_FORCEINLINE void write_q15x2 (
   q31_t val = value;
 
 #ifdef __ARM_FEATURE_UNALIGNED
-  memcpy (pQ15, &val, 4);
+  __builtin_memcpy(pQ15, &val, 4);
 #else
   pQ15[0] = (q15_t)(val & 0x0FFFF);
   pQ15[1] = (q15_t)(val >> 16);
