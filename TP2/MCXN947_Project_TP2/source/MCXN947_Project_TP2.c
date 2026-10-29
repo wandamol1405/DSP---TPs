@@ -182,6 +182,11 @@ int main(void) {
 
   PRINTF("\r\n========================================\r\n");
   PRINTF("  TP2 DSP - Filtros FIR (FRDM-MCXN947)\r\n");
+#if defined(DEBUG)
+  PRINTF("  [BUILD: DEBUG (-O0, sin optimizar)]\r\n");
+#else
+  PRINTF("  [BUILD: RELEASE (optimizado, SIMD activo)]\r\n");
+#endif
   PRINTF("  Etapas: ADC -> Buffer -> FIR -> DAC/UART\r\n");
   PRINTF("  Envie 'h' para ver comandos por consola\r\n");
   PRINTF("========================================\r\n\r\n");
