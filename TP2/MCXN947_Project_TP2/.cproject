@@ -460,6 +460,7 @@
 								<option id="gnu.c.compiler.option.preprocessor.preprocess.1779242799" name="Preprocess only (-E)" superClass="gnu.c.compiler.option.preprocessor.preprocess" useByScannerDiscovery="false"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="gnu.c.compiler.option.preprocessor.def.symbols.1510820450" name="Defined symbols (-D)" superClass="gnu.c.compiler.option.preprocessor.def.symbols" useByScannerDiscovery="false" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="CPU_MCXN947VDF"/>
+									<listOptionValue builtIn="false" value="SDK_DEBUGCONSOLE_UART"/>
 									<listOptionValue builtIn="false" value="CPU_MCXN947VDF_cm33"/>
 									<listOptionValue builtIn="false" value="CPU_MCXN947VDF_cm33_core0"/>
 									<listOptionValue builtIn="false" value="SERIAL_PORT_TYPE_UART=1"/>
@@ -543,6 +544,7 @@
 								<option id="com.crt.advproject.gcc.specs.1447207402" name="Specs" superClass="com.crt.advproject.gcc.specs" useByScannerDiscovery="false"/>
 								<option id="com.crt.advproject.gcc.config.151565640" name="Obsolete (Config)" superClass="com.crt.advproject.gcc.config" useByScannerDiscovery="false"/>
 								<option id="com.crt.advproject.gcc.store.750298307" name="Obsolete (Store)" superClass="com.crt.advproject.gcc.store" useByScannerDiscovery="false"/>
+								<option id="com.crt.advproject.gcc.exe.release.option.optimization.level.2091287849" name="Optimization Level" superClass="com.crt.advproject.gcc.exe.release.option.optimization.level" useByScannerDiscovery="true"/>
 								<inputType id="com.crt.advproject.compiler.input.1122266891" superClass="com.crt.advproject.compiler.input"/>
 							</tool>
 							<tool id="com.crt.advproject.gas.exe.release.1260775687" name="MCU Assembler" superClass="com.crt.advproject.gas.exe.release">
@@ -705,6 +707,23 @@
 								<option id="com.crt.advproject.debugger.security.nonsecureimageenable.330839090" name="Enable pre-programming of Non-Secure Image" superClass="com.crt.advproject.debugger.security.nonsecureimageenable"/>
 								<option id="com.crt.advproject.debugger.security.nonsecureimage.315947828" name="Non-Secure Project" superClass="com.crt.advproject.debugger.security.nonsecureimage"/>
 							</tool>
+						</toolChain>
+					</folderInfo>
+					<folderInfo id="com.crt.advproject.config.exe.release.1558056918.1490377389" name="/" resourcePath="CMSIS/DSP">
+						<toolChain id="com.crt.advproject.toolchain.exe.release.1429434192" name="NXP MCU Tools" superClass="com.crt.advproject.toolchain.exe.release" unusedChildren="">
+							<targetPlatform binaryParser="org.eclipse.cdt.core.ELF;org.eclipse.cdt.core.GNU_ELF" id="com.crt.advproject.platform.exe.release" name="ARM-based MCU (Release)" superClass="com.crt.advproject.platform.exe.release"/>
+							<tool id="com.crt.advproject.cpp.exe.release.939691155" name="MCU C++ Compiler" superClass="com.crt.advproject.cpp.exe.release.1024569423"/>
+							<tool id="com.crt.advproject.gcc.exe.release.1192130235" name="MCU C Compiler" superClass="com.crt.advproject.gcc.exe.release.378241514">
+								<option id="com.crt.advproject.gcc.exe.release.option.optimization.level.252008222" name="Optimization Level" superClass="com.crt.advproject.gcc.exe.release.option.optimization.level" value="gnu.c.optimization.level.size" valueType="enumerated"/>
+								<inputType id="com.crt.advproject.compiler.input.497340889" superClass="com.crt.advproject.compiler.input"/>
+							</tool>
+							<tool id="com.crt.advproject.gas.exe.release.1514818962" name="MCU Assembler" superClass="com.crt.advproject.gas.exe.release.1260775687">
+								<inputType id="cdt.managedbuild.tool.gnu.assembler.input.639631214" superClass="cdt.managedbuild.tool.gnu.assembler.input"/>
+								<inputType id="com.crt.advproject.assembler.input.110606983" name="Additional Assembly Source Files" superClass="com.crt.advproject.assembler.input"/>
+							</tool>
+							<tool id="com.crt.advproject.link.cpp.exe.release.548849040" name="MCU C++ Linker" superClass="com.crt.advproject.link.cpp.exe.release.1343786128"/>
+							<tool id="com.crt.advproject.link.exe.release.1696597556" name="MCU Linker" superClass="com.crt.advproject.link.exe.release.1257985341"/>
+							<tool id="com.crt.advproject.tool.debug.release.758937559" name="MCU Debugger" superClass="com.crt.advproject.tool.debug.release.1092434905"/>
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
