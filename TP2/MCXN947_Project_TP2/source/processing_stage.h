@@ -14,6 +14,14 @@
 #include "arm_math.h" // tipo q15_t y funciones de CMSIS-DSP
 #include "adc_stage.h" // Para usar sample_rate_t
 
+/*
+ * Tamaño de bloque del FIR, en muestras. pipeline_step() llama a
+ * processing_stage_process_block() una vez por muestra del ADC (sin acumular),
+ * así que queda en 1: cada muestra se filtra en el momento, sin latencia extra
+ * de bufferizado.
+ */
+#define PROCESSING_BLOCK_SIZE 1U
+
 /**
  * @brief Modos de operación del bloque de procesamiento (TP2).
  */
@@ -30,6 +38,11 @@ typedef enum {
  * @brief Inicializa la etapa de procesamiento DSP.
  */
 void processing_stage_init(void);
+
+/*
+ * Los setters de modo y frecuencia solo registran el cambio: se aplica al comienzo del
+ * próximo processing_stage_process_block(). Se pueden llamar desde cualquier ISR.
+ */
 
 /**
  * @brief Configura el modo de procesamiento de forma directa.
@@ -61,14 +74,9 @@ const char* processing_stage_get_mode_name(processing_mode_t mode);
 void processing_stage_set_sample_rate(sample_rate_t rate);
 
 /**
- * @brief Procesa una única muestra de entrada (muestra a muestra).
- * @param in_sample Muestra de entrada en formato Q15.
- * @return Muestra procesada en formato Q15.
- */
-q15_t processing_stage_process_sample(q15_t in_sample);
-
-/**
  * @brief Procesa un bloque de muestras contiguas.
+ *        Antes de filtrar aplica el cambio de modo/frecuencia pendiente, si lo hay
+ *        (reinicializa el FIR). Debe llamarse siempre desde el mismo contexto.
  * @param in Puntero al arreglo de entrada.
  * @param out Puntero al arreglo de salida.
  * @param length Cantidad de muestras a procesar.

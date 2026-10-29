@@ -7,8 +7,8 @@
 #include "pipeline.h" // declaraciones propias y de todas las etapas que coordina
 
 // Buffer circular de entrada (muestras del ADC)
-static q15_t s_buffer_storage[PIPELINE_BUFFER_SIZE]; 
-static circular_buffer_t s_circ_buffer;              
+static q15_t s_buffer_storage[PIPELINE_BUFFER_SIZE];
+static circular_buffer_t s_circ_buffer;
 
 // Buffer circular de salida diferenciado (muestras procesadas antes del DAC)
 static q15_t s_out_buffer_storage[PIPELINE_BUFFER_SIZE];
@@ -18,13 +18,13 @@ static circular_buffer_t s_out_circ_buffer;
 void pipeline_init(void) {
     circular_buffer_init(&s_circ_buffer, s_buffer_storage, PIPELINE_BUFFER_SIZE);
     circular_buffer_init(&s_out_circ_buffer, s_out_buffer_storage, PIPELINE_BUFFER_SIZE);
-    
+
     adc_stage_init(&s_circ_buffer);
     processing_stage_init();
-    
+
     // Notificamos a la etapa de procesamiento de la frecuencia inicial
     processing_stage_set_sample_rate(adc_stage_get_sample_rate());
-    
+
     dac_stage_init();
     uart_stage_init();
 }
@@ -37,8 +37,9 @@ void pipeline_step(void) {
     if (adc_stage_is_running()) {
         // Modo RUN: Adquisición en vivo del ADC
         if (adc_stage_read_sample(&in_sample)) {
-            // Etapa 2: Procesamiento DSP
-            out_sample = processing_stage_process_sample(in_sample);
+            // Etapa 2: Procesamiento DSP (una muestra por llamada; aplica el cambio de
+            // modo/frecuencia pendiente, si lo hay, antes de procesar)
+            processing_stage_process_block(&in_sample, &out_sample, 1);
 
             // Guardamos la muestra procesada en el buffer de salida diferenciado
             circular_buffer_push(&s_out_circ_buffer, out_sample);
@@ -54,7 +55,7 @@ void pipeline_step(void) {
         in_sample = circular_buffer_get_playback_sample(&s_circ_buffer);
 
         // Etapa 2: Procesamiento DSP (permite aplicar filtros sobre la señal congelada)
-        out_sample = processing_stage_process_sample(in_sample);
+        processing_stage_process_block(&in_sample, &out_sample, 1);
 
         // Guardamos la muestra procesada en el buffer de salida diferenciado
         circular_buffer_push(&s_out_circ_buffer, out_sample);
