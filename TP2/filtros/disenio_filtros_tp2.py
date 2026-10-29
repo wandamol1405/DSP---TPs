@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import numpy as np
-from scipy.signal import firwin, kaiser_beta as _kaiser_beta
+from scipy.signal import firwin, remez, kaiser_beta as _kaiser_beta
 
 # NFFT de verificación: Fs/NFFT de resolución. 2**18 alcanza de sobra para
 # resolver una transición de 20 Hz incluso a 48 kHz (~0.18 Hz/bin).
@@ -193,6 +193,17 @@ def normalizar_pico_0db(h, fs, cutoff, df, pass_zero, nfft=NFFT_DEFAULT):
 def cuantizar_q15(h, pad_par=True):
     """Redondea a Q15, satura a [-32768, 32767]. Si pad_par y la longitud
     es impar, agrega un 0 al final (arm_fir_init_q15 exige numTaps par)."""
+    # normalizar_pico_0db solo garantiza que la GANANCIA en la banda de paso
+    # sea 0 dB -- con ventaneo (Kaiser) eso alcanza para que cada coeficiente
+    # individual quede chico, pero un diseño equirizado puede tener algún
+    # tap individual más grande que 1 en magnitud (se cancelan entre sí para
+    # dar la ganancia correcta). Si eso pasa, hay que volver a escalar antes
+    # de cuantizar: si no, clip() satura cada tap grande al mismo valor
+    # ±32767 y arruina por completo la forma del filtro (no es un problema
+    # de 1-2 dB, es un filtro roto). Con Kaiser esto nunca dispara.
+    pico = np.abs(h).max()
+    if pico >= 1.0:
+        h = h / (pico * 1.0001)  # margen chico para no quedar justo en el borde
     # Q15 representa el rango [-1, 1) en pasos de 1/32768: multiplicar por
     # 32768 y redondear al entero más cercano es la cuantización. clip
     # satura el 1 caso límite (h=1.0 exacto redondearía a 32768, que no
@@ -321,15 +332,130 @@ def disenar_fir_kaiser(ftype, cutoff, astop_db, fs, df, numtaps=None, max_iter=2
                 fs=fs, pass_zero=pass_zero)
 
 
+def disenar_fir_equiripple(ftype, cutoff, astop_db, fs, df, numtaps=None,
+                            ripple_paso_db=0.5, max_iter=2000):
+    """
+    Diseña un FIR equirizado (algoritmo de Parks-McClellan / intercambio de
+    Remez), alternativa a disenar_fir_kaiser para el MISMO corte/Fs/Astop.
+
+    A diferencia del ventaneo (Kaiser aplicado sobre un sinc ideal), acá se
+    le pide directamente al algoritmo de Remez el filtro que minimiza el
+    error máximo (en el sentido de Chebyshev/minimax) entre la respuesta
+    real y la ideal, banda por banda. Para la misma especificación suele
+    necesitar bastantes menos taps que Kaiser -- a costa de no tener una
+    fórmula cerrada para estimar el orden de entrada (acá se parte de una
+    estimación y se ajusta igual que en disenar_fir_kaiser).
+
+    ftype    : 'lowpass' | 'highpass' | 'bandpass' | 'bandstop'
+    cutoff   : corte en Hz (lowpass/highpass) o [f1, f2] (bandpass/bandstop)
+    astop_db : atenuación pedida en la banda de rechazo, en dB
+    fs       : frecuencia de muestreo en Hz
+    df       : ancho de banda de transición en Hz (escalar o uno por borde)
+    numtaps  : si se da, FUERZA esa longitud (impar); si es None, se busca
+               automáticamente el n mínimo que cumple astop_db en Q15.
+    ripple_paso_db : rizado máximo tolerado en la banda de paso, en dB. La
+               consigna no lo fija (igual que df en Kaiser) -- cuanto más
+               chico, más exigente la banda de paso y más taps hacen falta.
+
+    Devuelve el mismo dict que disenar_fir_kaiser (mismas claves), así que
+    se puede usar con las mismas exportar_header/graficar/atenuacion_lograda.
+    """
+    pass_zero = ftype in ('lowpass', 'bandstop')
+    # remez necesita las bandas como lista plana [lo1, hi1, lo2, hi2, ...]
+    # con un 0/1 de ganancia deseada por banda -- exactamente lo que ya arma
+    # zonas_paso_rechazo (las mismas bandas que usa Kaiser para verificar,
+    # acá se las pasamos directo al diseño en vez de solo a la verificación).
+    zonas, es_paso = zonas_paso_rechazo(fs, cutoff, df, pass_zero)
+    bands = [v for par in zonas for v in par]
+    desired = [1 if p else 0 for p in es_paso]
+    # Pesos: remez reparte el error de forma que (peso_i * error_i) quede
+    # parejo entre bandas, así que el peso de cada banda es el inverso del
+    # rizado que se le quiere permitir ahí. delta_s sale directo de
+    # astop_db; delta_p es la aproximación lineal estándar de un rizado en
+    # dB chico alrededor de ganancia 1.
+    delta_s = 10 ** (-astop_db / 20)
+    delta_p = 10 ** (ripple_paso_db / 20) - 1
+    weight = [1 / delta_p if p else 1 / delta_s for p in desired]
+
+    def _disenar(n):
+        h = remez(n, bands, desired, weight=weight, fs=fs)
+        h = normalizar_pico_0db(h, fs, cutoff, df, pass_zero)
+        q = cuantizar_q15(h)
+        _, astop_q = atenuacion_lograda(q / 32768.0, fs, cutoff, df, pass_zero)
+        return h, q, astop_q
+
+    def _disenar_o_falla(n):
+        """Como _disenar, pero si Remez no converge (puede pasar con n chico,
+        sobre todo con 3 bandas: pasabanda/elimina banda) lo trata igual que
+        un diseño que no alcanza astop_db -- señal para seguir subiendo n,
+        en vez de cortar la búsqueda con una excepción."""
+        try:
+            return _disenar(n)
+        except ValueError:
+            return None, None, -np.inf
+
+    if numtaps is not None:
+        h, q, astop_q = _disenar(numtaps if numtaps % 2 else numtaps + 1)
+    else:
+        # No hay fórmula cerrada para el orden de un diseño equirizado como
+        # la de Kaiser, pero un equirizado para la misma especificación
+        # nunca necesita MÁS taps que el Kaiser equivalente (es el diseño
+        # que, para un orden dado, minimiza el error máximo -- en el peor
+        # caso iguala a Kaiser, pero en la práctica suele necesitar bastante
+        # menos). Arrancar la búsqueda en la mitad de la estimación de
+        # Kaiser ahorra muchísimas iteraciones comparado con arrancar de un
+        # n chico fijo, sobre todo en los filtros que terminan necesitando
+        # miles de taps (pasaaltos/pasabanda/elimina banda a 44-48 kHz).
+        nyq = fs / 2.0
+        width_norm = np.atleast_1d(df).astype(float).min() / nyq
+        n_kaiser = int(np.ceil((astop_db - 7.95) / (2.285 * np.pi * width_norm))) + 1
+        n = max(5, n_kaiser // 2)
+        n = n if n % 2 else n + 1
+
+        # Paso 1: subir de a 2 (Tipo I, longitud impar) hasta cumplir
+        # astop_db en Q15 -- o hasta que Remez converja, si el punto de
+        # partida resultó demasiado corto.
+        for _ in range(max_iter):
+            h, q, astop_q = _disenar_o_falla(n)
+            if astop_q >= astop_db:
+                break
+            n += 2
+        else:
+            raise RuntimeError(f"No se alcanzó Astop={astop_db} dB en {max_iter} iteraciones")
+
+        # Paso 2: bajar mientras el diseño más corto siga cumpliendo, para
+        # no quedarse con más taps de los que hacen falta (mismo criterio
+        # que el paso 2 de disenar_fir_kaiser).
+        while n > 5:
+            h2, q2, astop_q2 = _disenar_o_falla(n - 2)
+            if astop_q2 < astop_db:
+                break
+            n -= 2
+            h, q, astop_q = h2, q2, astop_q2
+        numtaps = n
+
+    _, astop_f = atenuacion_lograda(h, fs, cutoff, df, pass_zero)
+    ripple_q, gmax_q = ripple_gmax(q / 32768.0, fs, cutoff, df, pass_zero)
+    return dict(h=h, q=q, numtaps=len(q), beta=None, astop_f=astop_f,
+                astop_q=astop_q, ripple_q=ripple_q, gmax_q=gmax_q,
+                cutoff=np.atleast_1d(cutoff).astype(float),
+                df=np.atleast_1d(df).astype(float),
+                fs=fs, pass_zero=pass_zero)
+
+
 # =============================================================================
 # Exportación a filter_coeffs.h (mismo formato que usaba disenio_filtros_tp2.m)
 # =============================================================================
 
-def exportar_header(resultados, filtros, fs_label, h_path):
+def exportar_header(resultados, filtros, fs_label, h_path, metodo='Kaiser (ventaneo)'):
     """
-    resultados: dict {(key, fs_label): resultado de disenar_fir_kaiser}
+    resultados: dict {(key, fs_label): resultado de disenar_fir_kaiser o
+                 disenar_fir_equiripple -- mismo formato de dict, se puede
+                 pasar cualquiera de los dos (o incluso una mezcla).
     filtros: lista de specs (ver main()), en el orden en que se quieren
              las secciones del header.
+    metodo: texto libre para el comentario de cabecera, indica con qué
+            método se generaron estos coeficientes (Kaiser o equirizado).
     """
     max_taps = max(r['numtaps'] for r in resultados.values())  # el filtro más largo de los 20
     total = sum(r['numtaps'] for r in resultados.values())     # coeficientes totales a grabar en flash
@@ -340,14 +466,17 @@ def exportar_header(resultados, filtros, fs_label, h_path):
         # diseños, para poder revisarlos de un vistazo sin abrir el script.
         fid.write('/*\n * filter_coeffs.h\n *\n')
         fid.write(' * GENERADO AUTOMATICAMENTE por disenio_filtros_tp2.py: no editar a mano.\n')
-        fid.write(' * Filtros FIR por ventaneo (Kaiser), coeficientes en Q15.\n')
+        fid.write(f' * Filtros FIR por {metodo}, coeficientes en Q15.\n')
         fid.write(' * Longitud par por requisito de arm_fir_init_q15 (ultimo tap = 0\n')
         fid.write(' * cuando el diseno era impar).\n *\n')
-        fid.write(' * filtro  Fs      taps  beta   Astop req/real[dB]  ripple paso[dB]\n')
+        fid.write(' * filtro  Fs      taps  beta     Astop req/real[dB]  ripple paso[dB]\n')
         for F in filtros:
             for fsl in fs_label:
                 r = resultados[(F['key'], fsl)]
-                fid.write(f" * {F['key']:<6s}  {fsl:<6s} {r['numtaps']:5d}  {r['beta']:.3f}  "
+                # beta es None en diseños equirizados (no usan ventana) --
+                # se deja la columna en texto para no romper el formato.
+                beta_str = f"{r['beta']:.3f}" if r['beta'] is not None else 'equirip'
+                fid.write(f" * {F['key']:<6s}  {fsl:<6s} {r['numtaps']:5d}  {beta_str:>7s}  "
                           f"{F['astop']:4.0f} / {r['astop_q']:5.1f}          {r['ripple_q']:.2f}\n")
         fid.write(' */\n\n#ifndef FILTER_COEFFS_H\n#define FILTER_COEFFS_H\n\n')
         fid.write('#include "arm_math.h"\n\n')
