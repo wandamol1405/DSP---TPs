@@ -519,6 +519,115 @@ def exportar_header(resultados, filtros, fs_label, h_path, metodo='Kaiser (venta
 
 
 # =============================================================================
+# Elimina banda multirate (decimar -> notch -> interpolar), solo para ese filtro
+# =============================================================================
+
+def disenar_fir_aa_multiplo_m(cutoff, astop_db, fs, df, m, ripple_paso_db=0.5):
+    """
+    Disena un pasabajos equirizado cuyo numtaps sea EXACTAMENTE multiplo de `m`
+    -- lo exige arm_fir_interpolate_q15 de CMSIS-DSP (numTaps/L debe ser entero).
+    Primero deja que disenar_fir_equiripple calcule el orden automatico (n0), lo
+    redondea hacia arriba al proximo multiplo de m (par, porque m siempre es
+    par en este proyecto) y fuerza esa longitud menos 1 (impar): cuantizar_q15
+    agrega un tap en cero al final para volverla par, que es justo el multiplo
+    de m buscado. Mas taps que el minimo solo mejora la atenuacion, nunca la
+    empeora, asi que forzar hacia arriba es seguro.
+    """
+    n0 = disenar_fir_equiripple('lowpass', cutoff, astop_db, fs, df,
+                                 ripple_paso_db=ripple_paso_db)['numtaps']
+    objetivo = int(np.ceil(n0 / m) * m)
+    r = disenar_fir_equiripple('lowpass', cutoff, astop_db, fs, df,
+                                numtaps=objetivo - 1, ripple_paso_db=ripple_paso_db)
+    assert r['numtaps'] == objetivo and objetivo % m == 0, (r['numtaps'], objetivo, m)
+    return r
+
+
+def generar_multirate_bandstop(h_path, fs_label, fs_list, m_list, fr=50, bw=15,
+                                df_notch=40, astop_notch=25,
+                                fs_dec_objetivo=2000, astop_aa=35):
+    """
+    Genera filter_coeffs_multirate.h: anti-alias + notch a Fs/M para elimina
+    banda, pensado para reemplazar -- SOLO para BANDSTOP -- el filtro de una
+    sola etapa de filter_coeffs.h. Ver TP2/filtros/disenio_filtros_tp2_equiripple.ipynb
+    seccion 7 para el porque (Bw=15 Hz es una fraccion minuscula de Nyquist a
+    44-48 kHz, procesar el notch a Fs/M achica mucho esa fraccion).
+
+    m_list: factor de decimacion/interpolacion por Fs. Tiene que dividir
+    exactamente a PROCESSING_BLOCK_SIZE (32 en el firmware) -- si no,
+    arm_fir_decimate_q15 no acepta el bloque.
+    """
+    cutoff_bs = cutoff_bandstop_fr_bw(fr=fr, bw=bw, df=df_notch)
+    filas = []
+    for fsl, fs, m in zip(fs_label, fs_list, m_list):
+        fs_dec = fs / m
+        nyq_dec = fs_dec / 2
+        r_aa = disenar_fir_aa_multiplo_m(cutoff=0.6 * nyq_dec, astop_db=astop_aa,
+                                          fs=fs, df=0.3 * nyq_dec, m=m)
+        r_notch = disenar_fir_equiripple('bandstop', cutoff_bs, astop_notch, fs_dec, df_notch)
+        # Retardo de grupo total aproximado, en muestras a Fs completa:
+        # decimar (AA a Fs completa) + notch (a Fs/M, escalado por M) + interpolar (AA otra vez).
+        delay = round((r_aa['numtaps'] - 1) + m * (r_notch['numtaps'] - 1) / 2)
+        filas.append(dict(fsl=fsl, fs=fs, m=m, fs_dec=fs_dec, aa=r_aa, notch=r_notch, delay=delay))
+        print(f"{fsl:>4s}  M={m:<3d} fs_dec={fs_dec:7.1f}  AA={r_aa['numtaps']:<4d} "
+              f"(astop {r_aa['astop_q']:.1f}dB)  notch={r_notch['numtaps']:<4d} "
+              f"(astop {r_notch['astop_q']:.1f}dB)  delay~{delay}")
+
+    max_aa = max(f['aa']['numtaps'] for f in filas)
+    max_notch = max(f['notch']['numtaps'] for f in filas)
+    min_m = min(f['m'] for f in filas)
+    max_delay = max(f['delay'] for f in filas)
+
+    with open(h_path, 'w') as fid:
+        fid.write('/*\n * filter_coeffs_multirate.h\n *\n')
+        fid.write(' * GENERADO AUTOMATICAMENTE por disenio_filtros_tp2.py '
+                   '(generar_multirate_bandstop): no editar a mano.\n')
+        fid.write(' * Elimina banda multirate: decimar (anti-alias) -> notch a Fs/M -> interpolar.\n')
+        fid.write(' * Solo lo usa PROCESSING_MODE_BANDSTOP; los otros 3 filtros siguen con\n')
+        fid.write(' * el camino de una sola etapa de filter_coeffs.h.\n *\n')
+        fid.write(' * Fs      M   Fs/M     AA taps  notch taps  delay[muestras @ Fs]\n')
+        for f in filas:
+            fid.write(f" * {f['fsl']:<6s}  {f['m']:<3d} {f['fs_dec']:7.1f}  {f['aa']['numtaps']:7d}  "
+                       f"{f['notch']['numtaps']:10d}  {f['delay']:20d}\n")
+        fid.write(' */\n\n#ifndef FILTER_COEFFS_MULTIRATE_H\n#define FILTER_COEFFS_MULTIRATE_H\n\n')
+        fid.write('#include "arm_math.h"\n\n')
+        fid.write(f'#define BS_MR_MAX_AA_TAPS    {max_aa}\n')
+        fid.write(f'#define BS_MR_MAX_NOTCH_TAPS {max_notch}\n')
+        fid.write(f'#define BS_MR_MIN_M          {min_m}\n')
+        fid.write(f'#define BS_MR_MAX_DELAY      {max_delay}\n\n')
+        fid.write('typedef struct {\n')
+        fid.write('    uint32_t M;                /* factor de decimacion/interpolacion */\n')
+        fid.write('    const q15_t *pCoeffsAA;     /* anti-alias, mismo filtro para decimar e interpolar */\n')
+        fid.write('    uint16_t numTapsAA;         /* multiplo de M */\n')
+        fid.write('    const q15_t *pCoeffsNotch;  /* notch Fr/Bw/Astop/df a Fs/M */\n')
+        fid.write('    uint16_t numTapsNotch;\n')
+        fid.write('    uint32_t delaySamples;      /* retardo de grupo aprox., en muestras a Fs completa */\n')
+        fid.write('} bandstop_multirate_config_t;\n\n')
+
+        for f in filas:
+            for nombre, r in (('aa', f['aa']), ('notch', f['notch'])):
+                q = r['q']
+                fid.write(f"static const q15_t bs_mr_{nombre}_{f['fsl']}[{len(q)}] = {{\n")
+                for i in range(0, len(q), 12):
+                    fila = q[i:i + 12]
+                    fid.write('    ' + ''.join(f'{v:6d}, ' for v in fila) + '\n')
+                fid.write('};\n\n')
+
+        fid.write(f"/* Orden de las Fs: {', '.join(fs_label)} (igual que sample_rate_t) */\n")
+        fid.write('static const bandstop_multirate_config_t bs_mr_config[] = {\n')
+        for f in filas:
+            fid.write(f"    {{ .M = {f['m']}, "
+                       f".pCoeffsAA = bs_mr_aa_{f['fsl']}, .numTapsAA = {f['aa']['numtaps']}, "
+                       f".pCoeffsNotch = bs_mr_notch_{f['fsl']}, .numTapsNotch = {f['notch']['numtaps']}, "
+                       f".delaySamples = {f['delay']} }},\n")
+        fid.write('};\n\n#endif /* FILTER_COEFFS_MULTIRATE_H */\n')
+
+    total = sum(len(f['aa']['q']) + len(f['notch']['q']) for f in filas)
+    print(f'Exportado: {h_path}')
+    print(f'BS_MR_MAX_AA_TAPS={max_aa} BS_MR_MAX_NOTCH_TAPS={max_notch} '
+          f'BS_MR_MAX_DELAY={max_delay}; coeficientes totales={total} ({total*2/1024:.1f} KB en flash)')
+
+
+# =============================================================================
 # Gráficas (requiere matplotlib; opcional)
 # =============================================================================
 
