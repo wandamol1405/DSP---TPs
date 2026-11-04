@@ -28,41 +28,54 @@ static arm_fir_instance_q15 s_fir_instance;
 static q15_t s_fir_state[MAX_FIR_TAPS + PROCESSING_BLOCK_SIZE];
 
 // ---------------------------------------------------------------------------
-// Elimina banda: camino multirate (decimar -> notch -> interpolar).
+// Elimina banda: camino multirate (decimar -> banda de Fr -> interpolar).
 //
 // Bw=15 Hz es una fraccion minuscula de Nyquist a 44-48 kHz: un notch de una
 // sola etapa (arm_fir_q15, como el resto de los filtros) no entra en tiempo
-// real ahi. Procesando el notch a Fs/M, el mismo ancho absoluto es una
-// fraccion mucho mas grande de esa Nyquist reducida -> filtro mucho mas
-// corto. Ver TP2/filtros/disenio_filtros_tp2_equiripple.ipynb seccion 7.
+// real ahi. Procesando a Fs/M, el mismo ancho absoluto es una fraccion mucho
+// mas grande de esa Nyquist reducida -> filtro mucho mas corto. Ver
+// TP2/filtros/disenio_filtros_tp2_equiripple.ipynb seccion 7.
 //
-// y[n] = x[n-D] + Interpolar(Notch(Decimar(x)) - Decimar(x))
+//   y[n] = x[n-D] - ( Interp( Comp( Decim(x) ) ) << log2(M) )
 //
-// Interpolar la DIFERENCIA (lo que cambio el notch) en vez del notch
-// completo ahorra una pasada entera del filtro de reconstruccion: la
-// interpolacion es lineal, asi que da lo mismo que interpolar el notch
-// completo y restarle despues la señal decimada interpolada.
+// - Decim : anti-alias + diezmado por M (arm_fir_decimate_q15).
+// - Comp  : complemento del notch, delta[n-K] - notch[n], a Fs/M: deja pasar
+//           SOLO la banda de Fr, ya alineada en el tiempo (se genera en
+//           disenio_filtros_tp2.py, complemento_q15).
+// - Interp: relleno de ceros + el mismo anti-alias (arm_fir_interpolate_q15).
+//           CMSIS no multiplica por M: la salida queda con ganancia 1/M y se
+//           compensa con un shift de log2(M) (M es potencia de 2).
+// - D     : retardo de la rama de abajo, para que la resta cancele exacto la
+//           banda de Fr. Lo calcula el generador con las convenciones de
+//           CMSIS (coeficientes invertidos, fase del decimador).
+//
+// El resto del espectro no pasa por el diezmado: llega a la salida por la
+// linea de retardo con todo su ancho de banda.
 // ---------------------------------------------------------------------------
 static arm_fir_decimate_instance_q15    s_bs_dec_inst;
-static arm_fir_instance_q15             s_bs_notch_inst;
+static arm_fir_instance_q15             s_bs_comp_inst;
 static arm_fir_interpolate_instance_q15 s_bs_interp_inst;
 
+// Tamaños de estado: lo que pide (y limpia con memset) cada init de CMSIS.
+// arm_fir_init_q15 con ARM_MATH_DSP limpia numTaps + blockSize (no -1).
 static q15_t s_bs_dec_state[BS_MR_MAX_AA_TAPS + PROCESSING_BLOCK_SIZE - 1];
-static q15_t s_bs_notch_state[BS_MR_MAX_NOTCH_TAPS + (PROCESSING_BLOCK_SIZE / BS_MR_MIN_M) - 1];
+static q15_t s_bs_comp_state[BS_MR_MAX_COMP_TAPS + (PROCESSING_BLOCK_SIZE / BS_MR_MIN_M)];
 // numTapsAA/M es a lo sumo BS_MR_MAX_AA_TAPS/BS_MR_MIN_M: cota holgada, no ajustada
 // exacto por config (ver generar_multirate_bandstop en disenio_filtros_tp2.py)
 static q15_t s_bs_interp_state[(BS_MR_MAX_AA_TAPS / BS_MR_MIN_M) + (PROCESSING_BLOCK_SIZE / BS_MR_MIN_M) - 1];
 
-// Buffers intermedios (dominio decimado), dimensionados al peor caso: Fs/M con M minimo
-static q15_t s_bs_xdec[PROCESSING_BLOCK_SIZE / BS_MR_MIN_M];
-static q15_t s_bs_notch_out[PROCESSING_BLOCK_SIZE / BS_MR_MIN_M];
-static q15_t s_bs_diff[PROCESSING_BLOCK_SIZE / BS_MR_MIN_M];
-static q15_t s_bs_diff_up[PROCESSING_BLOCK_SIZE];
+// Buffers intermedios, dimensionados al peor caso (M minimo)
+static q15_t s_bs_xdec[PROCESSING_BLOCK_SIZE / BS_MR_MIN_M];   // x diezmada
+static q15_t s_bs_banda[PROCESSING_BLOCK_SIZE / BS_MR_MIN_M];  // banda de Fr, a Fs/M
+static q15_t s_bs_banda_up[PROCESSING_BLOCK_SIZE];             // banda de Fr, a Fs
 
 // Linea de retardo para x[n-D] (D = delaySamples de la config activa), implementada como
-// buffer circular de tamaño potencia de 2 (mascara en vez de modulo). BS_MR_MAX_DELAY es
-// el mayor D de las 5 Fs (ver filter_coeffs_multirate.h); 1024 le deja margen de sobra.
+// buffer circular de tamaño potencia de 2 (mascara en vez de modulo). Tiene que ser
+// mayor que BS_MR_MAX_DELAY (el mayor D de las 5 Fs, ver filter_coeffs_multirate.h).
 #define BS_MR_DELAY_BUF_SIZE 1024U
+#if BS_MR_MAX_DELAY >= BS_MR_DELAY_BUF_SIZE
+#error "BS_MR_DELAY_BUF_SIZE tiene que ser mayor que BS_MR_MAX_DELAY"
+#endif
 static q15_t s_bs_delay_buf[BS_MR_DELAY_BUF_SIZE];
 static uint32_t s_bs_delay_write = 0;
 
@@ -79,8 +92,8 @@ static void reconfigure_bandstop_multirate(sample_rate_t rate) {
 
     arm_fir_decimate_init_q15(&s_bs_dec_inst, cfg->numTapsAA, (uint8_t)cfg->M,
                                (q15_t *)cfg->pCoeffsAA, s_bs_dec_state, PROCESSING_BLOCK_SIZE);
-    arm_fir_init_q15(&s_bs_notch_inst, cfg->numTapsNotch, (q15_t *)cfg->pCoeffsNotch,
-                      s_bs_notch_state, PROCESSING_BLOCK_SIZE / cfg->M);
+    arm_fir_init_q15(&s_bs_comp_inst, cfg->numTapsComp, (q15_t *)cfg->pCoeffsComp,
+                      s_bs_comp_state, PROCESSING_BLOCK_SIZE / cfg->M);
     arm_fir_interpolate_init_q15(&s_bs_interp_inst, (uint8_t)cfg->M, cfg->numTapsAA,
                                   (q15_t *)cfg->pCoeffsAA, s_bs_interp_state, PROCESSING_BLOCK_SIZE / cfg->M);
 
@@ -113,25 +126,20 @@ static void process_bandstop_multirate(const q15_t *in, q15_t *out, uint32_t n) 
     // 1) Decimar (incluye el anti-alias)
     arm_fir_decimate_q15(&s_bs_dec_inst, (q15_t *)in, s_bs_xdec, PROCESSING_BLOCK_SIZE);
 
-    // 2) Notch a Fs/M
-    arm_fir_q15(&s_bs_notch_inst, s_bs_xdec, s_bs_notch_out, n_dec);
+    // 2) Quedarse solo con la banda de Fr (complemento del notch), a Fs/M
+    arm_fir_q15(&s_bs_comp_inst, s_bs_xdec, s_bs_banda, n_dec);
 
-    // 3) Diferencia: lo que cambio el notch (se interpola esto, no el notch completo)
-    for (uint32_t i = 0; i < n_dec; i++) {
-        s_bs_diff[i] = (q15_t)__SSAT((q31_t)s_bs_notch_out[i] - (q31_t)s_bs_xdec[i], 16);
-    }
+    // 3) Interpolar de vuelta a Fs y compensar la ganancia 1/M del interpolador
+    arm_fir_interpolate_q15(&s_bs_interp_inst, s_bs_banda, s_bs_banda_up, n_dec);
+    arm_shift_q15(s_bs_banda_up, cfg->log2M, s_bs_banda_up, PROCESSING_BLOCK_SIZE);
 
-    // 4) Interpolar la diferencia de vuelta a Fs completa
-    arm_fir_interpolate_q15(&s_bs_interp_inst, s_bs_diff, s_bs_diff_up, n_dec);
-
-    // 5) y[n] = x[n-D] + diferencia interpolada (D ~ retardo de grupo acumulado de
-    //    decimar+notch+interpolar, ver bandstop_multirate_config_t.delaySamples)
+    // 4) y[n] = x[n-D] - banda de Fr (D = retardo de la rama de abajo)
     for (uint32_t i = 0; i < PROCESSING_BLOCK_SIZE; i++) {
         s_bs_delay_buf[s_bs_delay_write] = in[i];
         uint32_t read_idx = (s_bs_delay_write - cfg->delaySamples) & (BS_MR_DELAY_BUF_SIZE - 1U);
         q15_t x_delayed = s_bs_delay_buf[read_idx];
         s_bs_delay_write = (s_bs_delay_write + 1U) & (BS_MR_DELAY_BUF_SIZE - 1U);
-        out[i] = (q15_t)__SSAT((q31_t)x_delayed + (q31_t)s_bs_diff_up[i], 16);
+        out[i] = (q15_t)__SSAT((q31_t)x_delayed - (q31_t)s_bs_banda_up[i], 16);
     }
 }
 

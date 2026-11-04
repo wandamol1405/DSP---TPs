@@ -42,6 +42,15 @@ from scipy.signal import firwin, remez, kaiser_beta as _kaiser_beta
 # resolver una transición de 20 Hz incluso a 48 kHz (~0.18 Hz/bin).
 NFFT_DEFAULT = 2 ** 18
 
+# Ganancia máxima tolerada en TODO el espectro (bandas de transición
+# incluidas), en dB, para un filtro ya normalizado a 0 dB en la banda de
+# paso. Las verificaciones de atenuacion_lograda/ripple_gmax solo miran las
+# zonas de paso y rechazo; Remez no restringe nada en las transiciones, y con
+# transiciones asimétricas (p.ej. pasabanda con df=[50, 400]) puede dejar un
+# pico de +30/+40 dB en la transición ancha sin que esas verificaciones lo
+# vean. Ver pico_total_db.
+PICO_MAX_DB = 0.5
+
 
 # =============================================================================
 # Bloques básicos
@@ -157,6 +166,23 @@ def atenuacion_lograda(coeffs_norm, fs, cutoff, df, pass_zero, nfft=NFFT_DEFAULT
     # La atenuación es -gmax_rechazo: si el punto menos atenuado está a
     # -25 dB, el filtro atenúa "al menos" 25 dB en toda la banda de rechazo.
     return gmax_paso, -gmax_rechazo
+
+
+def pico_total_db(coeffs_norm, fs, nfft=NFFT_DEFAULT):
+    """
+    Ganancia máxima de |H(f)| en dB sobre TODO el eje 0..Fs/2, bandas de
+    transición incluidas.
+
+    Detecta la "anomalía de banda de transición" de Parks-McClellan: cuando
+    una transición es mucho más ancha de lo que el orden necesita (el orden
+    lo fija la transición más angosta), Remez no tiene ninguna restricción
+    ahí y la respuesta puede subir decenas de dB. Las bandas de paso y
+    rechazo siguen cumpliendo, así que atenuacion_lograda/ripple_gmax no lo
+    ven; pero esos taps se pasan de 1, cuantizar_q15 reescala TODO el filtro
+    para que entren en Q15, y la banda de paso termina 10-20 dB abajo.
+    """
+    _, H = _respuesta_db(coeffs_norm, fs, nfft)
+    return float(H.max())
 
 
 def ripple_gmax(coeffs_norm, fs, cutoff, df, pass_zero, nfft=NFFT_DEFAULT):
@@ -382,7 +408,8 @@ def disenar_fir_equiripple(ftype, cutoff, astop_db, fs, df, numtaps=None,
         h = normalizar_pico_0db(h, fs, cutoff, df, pass_zero)
         q = cuantizar_q15(h)
         _, astop_q = atenuacion_lograda(q / 32768.0, fs, cutoff, df, pass_zero)
-        return h, q, astop_q
+        pico = pico_total_db(q / 32768.0, fs)
+        return h, q, astop_q, pico
 
     def _disenar_o_falla(n):
         """Como _disenar, pero si Remez no converge (puede pasar con n chico,
@@ -392,10 +419,26 @@ def disenar_fir_equiripple(ftype, cutoff, astop_db, fs, df, numtaps=None,
         try:
             return _disenar(n)
         except ValueError:
-            return None, None, -np.inf
+            return None, None, -np.inf, np.inf
+
+    def _cumple(astop_q, pico):
+        # Un diseño vale solo si cumple Astop en las bandas de rechazo Y no
+        # tiene ganancia de más en ninguna parte del espectro (ver
+        # pico_total_db: anomalía de banda de transición de Remez).
+        return astop_q >= astop_db and pico <= PICO_MAX_DB
+
+    def _error_pico(n, pico):
+        return RuntimeError(
+            f"{ftype} Fs={fs}: el diseño equirizado con {n} taps cumple Astop pero "
+            f"tiene un pico de {pico:+.1f} dB en una banda de transición "
+            f"(anomalía de Remez). Usar transiciones (df) menos asimétricas: "
+            f"la más ancha no debería ser mucho mayor que la que fija el orden.")
 
     if numtaps is not None:
-        h, q, astop_q = _disenar(numtaps if numtaps % 2 else numtaps + 1)
+        n = numtaps if numtaps % 2 else numtaps + 1
+        h, q, astop_q, pico = _disenar(n)
+        if pico > PICO_MAX_DB:
+            raise _error_pico(n, pico)
     else:
         # No hay fórmula cerrada para el orden de un diseño equirizado como
         # la de Kaiser, pero un equirizado para la misma especificación
@@ -413,12 +456,20 @@ def disenar_fir_equiripple(ftype, cutoff, astop_db, fs, df, numtaps=None,
         n = n if n % 2 else n + 1
 
         # Paso 1: subir de a 2 (Tipo I, longitud impar) hasta cumplir
-        # astop_db en Q15 -- o hasta que Remez converja, si el punto de
-        # partida resultó demasiado corto.
+        # astop_db en Q15 sin picos en las transiciones -- o hasta que Remez
+        # converja, si el punto de partida resultó demasiado corto.
+        # Si Astop ya se cumple pero el pico persiste muchos pasos seguidos,
+        # subir n no lo va a arreglar (es la geometría de las bandas, no el
+        # orden): se corta con un error claro en vez de iterar hasta max_iter.
+        con_pico = 0
         for _ in range(max_iter):
-            h, q, astop_q = _disenar_o_falla(n)
-            if astop_q >= astop_db:
+            h, q, astop_q, pico = _disenar_o_falla(n)
+            if _cumple(astop_q, pico):
                 break
+            if astop_q >= astop_db:
+                con_pico += 1
+                if con_pico >= 20:
+                    raise _error_pico(n, pico)
             n += 2
         else:
             raise RuntimeError(f"No se alcanzó Astop={astop_db} dB en {max_iter} iteraciones")
@@ -427,11 +478,11 @@ def disenar_fir_equiripple(ftype, cutoff, astop_db, fs, df, numtaps=None,
         # no quedarse con más taps de los que hacen falta (mismo criterio
         # que el paso 2 de disenar_fir_kaiser).
         while n > 5:
-            h2, q2, astop_q2 = _disenar_o_falla(n - 2)
-            if astop_q2 < astop_db:
+            h2, q2, astop_q2, pico2 = _disenar_o_falla(n - 2)
+            if not _cumple(astop_q2, pico2):
                 break
             n -= 2
-            h, q, astop_q = h2, q2, astop_q2
+            h, q, astop_q, pico = h2, q2, astop_q2, pico2
         numtaps = n
 
     _, astop_f = atenuacion_lograda(h, fs, cutoff, df, pass_zero)
@@ -457,6 +508,16 @@ def exportar_header(resultados, filtros, fs_label, h_path, metodo='Kaiser (venta
     metodo: texto libre para el comentario de cabecera, indica con qué
             método se generaron estos coeficientes (Kaiser o equirizado).
     """
+    # Red de seguridad: no escribir nunca un header con un filtro que tenga
+    # ganancia de más en alguna parte del espectro (ver pico_total_db). Se
+    # chequea acá además de en el diseño porque resultados puede venir de
+    # cualquier lado (Kaiser, equirizado, combinaciones armadas a mano).
+    for (key, fsl), r in resultados.items():
+        pico = pico_total_db(r['q'] / 32768.0, r['fs'])
+        if pico > PICO_MAX_DB:
+            raise RuntimeError(f"{key} {fsl}: pico de {pico:+.1f} dB en |H(f)| "
+                               f"(máximo tolerado {PICO_MAX_DB} dB); no se exporta el header.")
+
     max_taps = max(r['numtaps'] for r in resultados.values())  # el filtro más largo de los 20
     total = sum(r['numtaps'] for r in resultados.values())     # coeficientes totales a grabar en flash
 
@@ -519,10 +580,64 @@ def exportar_header(resultados, filtros, fs_label, h_path, metodo='Kaiser (venta
 
 
 # =============================================================================
-# Elimina banda multirate (decimar -> notch -> interpolar), solo para ese filtro
+# Elimina banda multirate (decimar -> banda de Fr -> interpolar), solo para ese filtro
 # =============================================================================
+#
+# Estructura (la implementa process_bandstop_multirate en processing_stage.c):
+#
+#     y[n] = x[n-D] - M * Interp( Comp( Decim(x) ) )
+#
+#   Decim  : anti-alias + diezmado por M     (arm_fir_decimate_q15)
+#   Comp   : complemento del notch, a Fs/M   (arm_fir_q15)
+#            c[n] = delta[n-K] - notch[n]  ->  deja pasar SOLO la banda de Fr
+#   Interp : relleno de ceros + anti-alias   (arm_fir_interpolate_q15), que
+#            deja la señal con ganancia 1/M -> se compensa con un shift de log2(M)
+#   D      : retardo de grupo total de la rama de abajo, para que la resta
+#            cancele exactamente la banda de Fr
+#
+# Convenciones de CMSIS-DSP que importan para que la resta cancele (y que la
+# primera versión no tenía en cuenta, por eso el filtro se comportaba como BYPASS):
+#   - Todos los FIR de CMSIS guardan los coeficientes INVERTIDOS en el tiempo:
+#     el filtro real es b[k] = pCoeffs[N-1-k]. Como cuantizar_q15 agrega el tap
+#     en 0 al FINAL, en el filtro real ese 0 queda ADELANTE: cada FIR simétrico
+#     de longitud N (par, con el 0) tiene retardo N/2, no (N-2)/2.
+#   - arm_fir_decimate_q15 calcula la salida m con la ventana que termina en la
+#     PRIMERA muestra nueva de cada grupo de M (n = m*M): copia las M muestras
+#     al estado pero filtra desde el principio del buffer. (Verificado
+#     compilando processing_stage.c + CMSIS en la PC: con n = m*M + M-1 el
+#     retardo D quedaba corto en M-1 muestras y el rechazo no pasaba de -18 dB.)
+#   - arm_fir_interpolate_q15 rellena con ceros y filtra, pero NO multiplica
+#     por M: la salida queda con ganancia 1/M.
 
-def disenar_fir_aa_multiplo_m(cutoff, astop_db, fs, df, m, ripple_paso_db=0.5):
+def retardo_cmsis(q):
+    """
+    Retardo de grupo (en muestras) que aplica CMSIS-DSP con los coeficientes
+    q tal como se exportan (simétricos + un 0 agregado al final por
+    cuantizar_q15). Ver las convenciones de arriba: el filtro real es q
+    invertido, con el 0 adelante, así que el retardo es len(q)/2.
+    """
+    q = np.asarray(q)
+    assert len(q) % 2 == 0 and q[-1] == 0, 'se espera longitud par con el último tap en 0'
+    assert np.array_equal(q[:-1], q[-2::-1]), 'se espera un FIR simétrico (fase lineal)'
+    return len(q) // 2
+
+
+def complemento_q15(q_notch):
+    """
+    Complemento del notch en Q15: c[n] = delta[n-K] - notch[n], con K el
+    centro de la parte simétrica. Deja pasar solo la banda que el notch
+    rechaza (alrededor de Fr), ya alineada en el tiempo con delta[n-K].
+    La cuenta es exacta en enteros (32768 = 1.0 en Q15).
+    """
+    retardo_cmsis(q_notch)  # valida simetría y el 0 final
+    k = (len(q_notch) - 2) // 2
+    qc = -np.asarray(q_notch, dtype=np.int64)
+    qc[k] += 32768
+    assert np.abs(qc).max() <= 32767, 'el complemento no entra en Q15'
+    return qc
+
+
+def disenar_fir_aa_multiplo_m(cutoff, astop_db, fs, df, m, ripple_paso_db=0.5, f_norm=None):
     """
     Disena un pasabajos equirizado cuyo numtaps sea EXACTAMENTE multiplo de `m`
     -- lo exige arm_fir_interpolate_q15 de CMSIS-DSP (numTaps/L debe ser entero).
@@ -532,48 +647,109 @@ def disenar_fir_aa_multiplo_m(cutoff, astop_db, fs, df, m, ripple_paso_db=0.5):
     agrega un tap en cero al final para volverla par, que es justo el multiplo
     de m buscado. Mas taps que el minimo solo mejora la atenuacion, nunca la
     empeora, asi que forzar hacia arriba es seguro.
+
+    f_norm: si se da, reescala el filtro para que su ganancia en f_norm sea
+    exactamente 1 (en vez de pico 0 dB en la banda de paso). En el elimina
+    banda multirate el AA se aplica dos veces en la rama que se resta: con el
+    ripple de paso, la ganancia en Fr podía quedar en ~0.92 y la cancelación no
+    pasaba de ~-17 dB.
     """
     n0 = disenar_fir_equiripple('lowpass', cutoff, astop_db, fs, df,
                                  ripple_paso_db=ripple_paso_db)['numtaps']
     objetivo = int(np.ceil(n0 / m) * m)
     r = disenar_fir_equiripple('lowpass', cutoff, astop_db, fs, df,
                                 numtaps=objetivo - 1, ripple_paso_db=ripple_paso_db)
+    if f_norm is not None:
+        h = r['h']
+        g = np.abs(np.sum(h * np.exp(-2j * np.pi * f_norm * np.arange(len(h)) / fs)))
+        r['h'] = h / g
+        r['q'] = cuantizar_q15(r['h'])
+        r['numtaps'] = len(r['q'])
     assert r['numtaps'] == objetivo and objetivo % m == 0, (r['numtaps'], objetivo, m)
     return r
 
 
-def generar_multirate_bandstop(h_path, fs_label, fs_list, m_list, fr=50, bw=15,
-                                df_notch=40, astop_notch=25,
-                                fs_dec_objetivo=2000, astop_aa=35):
+def simular_bandstop_multirate(q_aa, q_comp, m, delay, fs, f, dur_s=2.0):
     """
-    Genera filter_coeffs_multirate.h: anti-alias + notch a Fs/M para elimina
-    banda, pensado para reemplazar -- SOLO para BANDSTOP -- el filtro de una
-    sola etapa de filter_coeffs.h. Ver TP2/filtros/disenio_filtros_tp2_equiripple.ipynb
-    seccion 7 para el porque (Bw=15 Hz es una fraccion minuscula de Nyquist a
-    44-48 kHz, procesar el notch a Fs/M achica mucho esa fraccion).
+    Emula la cadena del firmware (process_bandstop_multirate) con las mismas
+    convenciones que CMSIS-DSP (coeficientes invertidos, fase del decimador,
+    interpolador con ganancia 1/M compensada por M) y devuelve la ganancia en
+    dB para un tono de frecuencia f, en régimen permanente. Aritmética en
+    float con los coeficientes Q15 exportados: no modela el ruido de
+    cuantización de las señales intermedias.
+    """
+    n_tot = m * int(np.ceil(fs * dur_s / m))
+    x = 0.5 * np.sin(2 * np.pi * f * np.arange(n_tot) / fs)
+    b_aa = np.asarray(q_aa)[::-1] / 32768.0
+    b_c = np.asarray(q_comp)[::-1] / 32768.0
+    x_dec = np.convolve(x, b_aa)[:n_tot][::m]            # arm_fir_decimate_q15 (n = m*M)
+    banda = np.convolve(x_dec, b_c)[:len(x_dec)]          # arm_fir_q15 (complemento)
+    up = np.zeros(n_tot)
+    up[::m] = banda                                       # arm_fir_interpolate_q15:
+    banda_up = m * np.convolve(up, b_aa)[:n_tot]          #   ceros + AA, y shift log2(M)
+    x_d = np.concatenate([np.zeros(delay), x])[:n_tot]    # linea de retardo
+    y = x_d - banda_up
+    s = n_tot // 2
+    return 20 * np.log10(np.std(y[s:]) / np.std(x[s:]))
 
-    m_list: factor de decimacion/interpolacion por Fs. Tiene que dividir
+
+def generar_multirate_bandstop(h_path, fs_label, fs_list, m_list, fr=50, bw=15,
+                                df_notch=40, astop_notch=25, astop_aa=35, margen_db=1.0):
+    """
+    Genera filter_coeffs_multirate.h: anti-alias + complemento del notch a
+    Fs/M para elimina banda, pensado para reemplazar -- SOLO para BANDSTOP --
+    el filtro de una sola etapa de filter_coeffs.h. Ver
+    TP2/filtros/disenio_filtros_tp2_equiripple.ipynb seccion 7 para el porque
+    (Bw=15 Hz es una fraccion minuscula de Nyquist a 44-48 kHz, procesar el
+    notch a Fs/M achica mucho esa fraccion).
+
+    m_list: factor de decimacion/interpolacion por Fs. Tiene que ser potencia
+    de 2 (la ganancia M del interpolador se compensa con un shift) y dividir
     exactamente a PROCESSING_BLOCK_SIZE (32 en el firmware) -- si no,
     arm_fir_decimate_q15 no acepta el bloque.
+
+    Antes de exportar verifica la respuesta de la cadena completa con
+    simular_bandstop_multirate, y no escribe el header si no cumple
+    astop_notch. El notch se disena con margen_db de mas porque la cadena
+    (AA dos veces, cuantizacion del complemento) come algunas decimas.
     """
     cutoff_bs = cutoff_bandstop_fr_bw(fr=fr, bw=bw, df=df_notch)
+    f_rech = [fr - bw / 2, fr, fr + bw / 2]
+    f_paso = [fr - bw / 2 - df_notch, fr + bw / 2 + df_notch, 1000]
     filas = []
     for fsl, fs, m in zip(fs_label, fs_list, m_list):
+        assert m & (m - 1) == 0, f'M={m} no es potencia de 2'
         fs_dec = fs / m
         nyq_dec = fs_dec / 2
         r_aa = disenar_fir_aa_multiplo_m(cutoff=0.6 * nyq_dec, astop_db=astop_aa,
-                                          fs=fs, df=0.3 * nyq_dec, m=m)
-        r_notch = disenar_fir_equiripple('bandstop', cutoff_bs, astop_notch, fs_dec, df_notch)
-        # Retardo de grupo total aproximado, en muestras a Fs completa:
-        # decimar (AA a Fs completa) + notch (a Fs/M, escalado por M) + interpolar (AA otra vez).
-        delay = round((r_aa['numtaps'] - 1) + m * (r_notch['numtaps'] - 1) / 2)
-        filas.append(dict(fsl=fsl, fs=fs, m=m, fs_dec=fs_dec, aa=r_aa, notch=r_notch, delay=delay))
+                                          fs=fs, df=0.3 * nyq_dec, m=m, f_norm=fr)
+        r_notch = disenar_fir_equiripple('bandstop', cutoff_bs, astop_notch + margen_db,
+                                         fs_dec, df_notch)
+        q_comp = complemento_q15(r_notch['q'])
+        # Retardo total de la rama de abajo, en muestras a Fs (ver convenciones
+        # arriba): AA al decimar + complemento (a Fs/M, x M) + AA al interpolar.
+        delay = retardo_cmsis(r_aa['q']) + m * retardo_cmsis(q_comp) \
+            + retardo_cmsis(r_aa['q'])
+
+        g_rech = [simular_bandstop_multirate(r_aa['q'], q_comp, m, delay, fs, f) for f in f_rech]
+        g_paso = [simular_bandstop_multirate(r_aa['q'], q_comp, m, delay, fs, f) for f in f_paso]
+        # Tono que, al diezmar, cae justo en Fr: el AA lo tiene que frenar.
+        g_alias = simular_bandstop_multirate(r_aa['q'], q_comp, m, delay, fs, fs_dec - fr)
+        filas.append(dict(fsl=fsl, fs=fs, m=m, fs_dec=fs_dec, aa=r_aa, notch=r_notch,
+                          q_comp=q_comp, delay=delay, g_rech=g_rech, g_paso=g_paso))
         print(f"{fsl:>4s}  M={m:<3d} fs_dec={fs_dec:7.1f}  AA={r_aa['numtaps']:<4d} "
-              f"(astop {r_aa['astop_q']:.1f}dB)  notch={r_notch['numtaps']:<4d} "
-              f"(astop {r_notch['astop_q']:.1f}dB)  delay~{delay}")
+              f"comp={len(q_comp):<4d} D={delay:<4d} | rechazo "
+              + ' '.join(f'{f:g}Hz:{g:6.1f}' for f, g in zip(f_rech, g_rech))
+              + ' | paso ' + ' '.join(f'{f:g}Hz:{g:5.2f}' for f, g in zip(f_paso, g_paso))
+              + f' | alias {fs_dec - fr:g}Hz:{g_alias:5.2f} dB')
+
+    peor = max(max(f['g_rech']) for f in filas)
+    if peor > -astop_notch:
+        raise RuntimeError(f'La cadena multirate no cumple: rechazo de solo {-peor:.1f} dB '
+                           f'(se piden {astop_notch} dB). No se exporta el header.')
 
     max_aa = max(f['aa']['numtaps'] for f in filas)
-    max_notch = max(f['notch']['numtaps'] for f in filas)
+    max_comp = max(len(f['q_comp']) for f in filas)
     min_m = min(f['m'] for f in filas)
     max_delay = max(f['delay'] for f in filas)
 
@@ -581,31 +757,37 @@ def generar_multirate_bandstop(h_path, fs_label, fs_list, m_list, fr=50, bw=15,
         fid.write('/*\n * filter_coeffs_multirate.h\n *\n')
         fid.write(' * GENERADO AUTOMATICAMENTE por disenio_filtros_tp2.py '
                    '(generar_multirate_bandstop): no editar a mano.\n')
-        fid.write(' * Elimina banda multirate: decimar (anti-alias) -> notch a Fs/M -> interpolar.\n')
+        fid.write(' * Elimina banda multirate:\n')
+        fid.write(' *     y[n] = x[n-D] - (Interp(Comp(Decim(x))) << log2(M))\n')
+        fid.write(' * Comp = delta[n-K] - notch[n]: deja pasar solo la banda de Fr, que se resta.\n')
         fid.write(' * Solo lo usa PROCESSING_MODE_BANDSTOP; los otros 3 filtros siguen con\n')
         fid.write(' * el camino de una sola etapa de filter_coeffs.h.\n *\n')
-        fid.write(' * Fs      M   Fs/M     AA taps  notch taps  delay[muestras @ Fs]\n')
+        fid.write(f' * Fr={fr} Hz, Bw={bw} Hz, Astop notch={astop_notch} dB, '
+                  f'df notch={df_notch} Hz, Astop AA={astop_aa} dB\n')
+        fid.write(' * Ganancia simulada de la cadena completa [dB] en Fr-Bw/2, Fr, Fr+Bw/2:\n *\n')
+        fid.write(' * Fs      M   Fs/M     AA taps  comp taps  D[muestras @ Fs]  rechazo [dB]\n')
         for f in filas:
             fid.write(f" * {f['fsl']:<6s}  {f['m']:<3d} {f['fs_dec']:7.1f}  {f['aa']['numtaps']:7d}  "
-                       f"{f['notch']['numtaps']:10d}  {f['delay']:20d}\n")
+                       f"{len(f['q_comp']):9d}  {f['delay']:16d}  "
+                       + ' / '.join(f'{g:.1f}' for g in f['g_rech']) + '\n')
         fid.write(' */\n\n#ifndef FILTER_COEFFS_MULTIRATE_H\n#define FILTER_COEFFS_MULTIRATE_H\n\n')
         fid.write('#include "arm_math.h"\n\n')
         fid.write(f'#define BS_MR_MAX_AA_TAPS    {max_aa}\n')
-        fid.write(f'#define BS_MR_MAX_NOTCH_TAPS {max_notch}\n')
+        fid.write(f'#define BS_MR_MAX_COMP_TAPS  {max_comp}\n')
         fid.write(f'#define BS_MR_MIN_M          {min_m}\n')
         fid.write(f'#define BS_MR_MAX_DELAY      {max_delay}\n\n')
         fid.write('typedef struct {\n')
-        fid.write('    uint32_t M;                /* factor de decimacion/interpolacion */\n')
+        fid.write('    uint32_t M;                 /* factor de decimacion/interpolacion (potencia de 2) */\n')
+        fid.write('    int8_t log2M;               /* shift que compensa la ganancia 1/M del interpolador */\n')
         fid.write('    const q15_t *pCoeffsAA;     /* anti-alias, mismo filtro para decimar e interpolar */\n')
         fid.write('    uint16_t numTapsAA;         /* multiplo de M */\n')
-        fid.write('    const q15_t *pCoeffsNotch;  /* notch Fr/Bw/Astop/df a Fs/M */\n')
-        fid.write('    uint16_t numTapsNotch;\n')
-        fid.write('    uint32_t delaySamples;      /* retardo de grupo aprox., en muestras a Fs completa */\n')
+        fid.write('    const q15_t *pCoeffsComp;   /* complemento del notch (banda de Fr) a Fs/M */\n')
+        fid.write('    uint16_t numTapsComp;\n')
+        fid.write('    uint32_t delaySamples;      /* retardo de la rama decimada, en muestras a Fs */\n')
         fid.write('} bandstop_multirate_config_t;\n\n')
 
         for f in filas:
-            for nombre, r in (('aa', f['aa']), ('notch', f['notch'])):
-                q = r['q']
+            for nombre, q in (('aa', f['aa']['q']), ('comp', f['q_comp'])):
                 fid.write(f"static const q15_t bs_mr_{nombre}_{f['fsl']}[{len(q)}] = {{\n")
                 for i in range(0, len(q), 12):
                     fila = q[i:i + 12]
@@ -615,17 +797,16 @@ def generar_multirate_bandstop(h_path, fs_label, fs_list, m_list, fr=50, bw=15,
         fid.write(f"/* Orden de las Fs: {', '.join(fs_label)} (igual que sample_rate_t) */\n")
         fid.write('static const bandstop_multirate_config_t bs_mr_config[] = {\n')
         for f in filas:
-            fid.write(f"    {{ .M = {f['m']}, "
+            fid.write(f"    {{ .M = {f['m']}, .log2M = {int(np.log2(f['m']))}, "
                        f".pCoeffsAA = bs_mr_aa_{f['fsl']}, .numTapsAA = {f['aa']['numtaps']}, "
-                       f".pCoeffsNotch = bs_mr_notch_{f['fsl']}, .numTapsNotch = {f['notch']['numtaps']}, "
+                       f".pCoeffsComp = bs_mr_comp_{f['fsl']}, .numTapsComp = {len(f['q_comp'])}, "
                        f".delaySamples = {f['delay']} }},\n")
         fid.write('};\n\n#endif /* FILTER_COEFFS_MULTIRATE_H */\n')
 
-    total = sum(len(f['aa']['q']) + len(f['notch']['q']) for f in filas)
+    total = sum(len(f['aa']['q']) + len(f['q_comp']) for f in filas)
     print(f'Exportado: {h_path}')
-    print(f'BS_MR_MAX_AA_TAPS={max_aa} BS_MR_MAX_NOTCH_TAPS={max_notch} '
+    print(f'BS_MR_MAX_AA_TAPS={max_aa} BS_MR_MAX_COMP_TAPS={max_comp} '
           f'BS_MR_MAX_DELAY={max_delay}; coeficientes totales={total} ({total*2/1024:.1f} KB en flash)')
-
 
 # =============================================================================
 # Gráficas (requiere matplotlib; opcional)
@@ -758,5 +939,22 @@ def main():
     return resultados, filtros, fs_label
 
 
+def main_multirate():
+    """Regenera SOLO filter_coeffs_multirate.h (elimina banda multirate).
+    Uso: python disenio_filtros_tp2.py multirate"""
+    fs_label = ['8k', '16k', '22k', '44k', '48k']
+    fs_list = [8000, 16000, 22000, 44000, 48000]
+    # Potencias de 2 que dividen a PROCESSING_BLOCK_SIZE=32, con Fs/M entre 2 y 3 kHz
+    m_list = [4, 8, 8, 16, 16]
+    out_dir = os.path.dirname(os.path.abspath(__file__))
+    h_path = os.path.join(out_dir, '..', 'MCXN947_Project_TP2', 'source', 'filter_coeffs_multirate.h')
+    generar_multirate_bandstop(h_path, fs_label, fs_list, m_list, fr=50, bw=15,
+                               df_notch=40, astop_notch=25, astop_aa=35)
+
+
 if __name__ == '__main__':
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == 'multirate':
+        main_multirate()
+    else:
+        main()
