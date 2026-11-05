@@ -27,13 +27,55 @@
 #include "dac_stage.h"        // etapa de salida analógica (incluida por completitud del pipeline)
 #include "uart_stage.h"       // comandos por UART: try_getchar, streaming, is_streaming_enabled
 #include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
+#include "ui.h"               // interfaz gráfica en el display OLED (independiente del hardware)
 
 /* Flags de notificación para impresión en el loop principal (se setean desde ISRs o
  * desde ProcessUartCommands, y se consumen y limpian en el while(1) de main) */
-static volatile bool adc_print_flag = false;    // pide imprimir el estado RUN/STOP
-static volatile bool freq_print_flag = false;   // pide imprimir la frecuencia de muestreo actual
-static volatile bool buffer_dump_flag = false;  // pide volcar el buffer circular por UART
+static volatile bool adc_print_flag = false;      // pide imprimir el estado RUN/STOP
+static volatile bool freq_print_flag = false;     // pide imprimir la frecuencia de muestreo actual
+static volatile bool buffer_dump_flag = false;    // pide volcar el buffer circular por UART
 static volatile bool dsp_mode_print_flag = false; // pide imprimir el modo de procesamiento DSP actual
+static volatile bool ui_update_flag = false;      // pide sincronizar el estado del DSP hacia la UI
+
+/**
+ * @brief Parámetros nominales de visualización asociados a cada modo del DSP.
+ *
+ * Los filtros se diseñan en disenio_filtros_tp2.py con especificaciones fijas en Hz:
+ *   - Pasa bajos : Fc = 3600 Hz
+ *   - Pasa altos : Fc = 35 Hz
+ *   - Pasa banda : banda de paso [35, 3500] Hz -> Fc central = 1768 Hz, BW = 3465 Hz
+ *   - Elimina banda : rechazo centrado en Fr = 50 Hz, BW = 15 Hz
+ */
+typedef struct {
+  ui_filter_t ui_type;
+  uint32_t fc_hz;
+  uint32_t bw_hz;
+} dsp_mode_ui_info_t;
+
+static const dsp_mode_ui_info_t s_mode_ui_info[PROCESSING_MODE_COUNT] = {
+    [PROCESSING_MODE_BYPASS]   = {UI_FILTER_BYPASS,   UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
+    [PROCESSING_MODE_LOWPASS]  = {UI_FILTER_LOWPASS,  3600u,             UI_FREQUENCY_NONE},
+    [PROCESSING_MODE_HIGHPASS] = {UI_FILTER_HIGHPASS, 35u,               UI_FREQUENCY_NONE},
+    [PROCESSING_MODE_BANDPASS] = {UI_FILTER_BANDPASS, 1768u,             3465u},
+    [PROCESSING_MODE_BANDSTOP] = {UI_FILTER_BANDSTOP, 50u,               15u},
+};
+
+/**
+ * @brief Publica en la UI el estado actual del pipeline DSP (Fs, filtro, Fc, BW y taps).
+ *        La UI decide internamente qué regiones del display cambiaron realmente.
+ */
+static void UpdateUiFromDsp(void) {
+  processing_mode_t mode = pipeline_get_processing_mode();
+  if ((unsigned int)mode >= (unsigned int)PROCESSING_MODE_COUNT) {
+    mode = PROCESSING_MODE_BYPASS;
+  }
+
+  ui_set_sampling_frequency(pipeline_get_sample_rate_hz());
+  ui_set_filter_type(s_mode_ui_info[mode].ui_type);
+  ui_set_cutoff_frequency(s_mode_ui_info[mode].fc_hz);
+  ui_set_bandwidth(s_mode_ui_info[mode].bw_hz);
+  ui_set_filter_taps(pipeline_get_num_taps());
+}
 
 /**
  * @brief Configura el color del LED según la frecuencia de muestreo.
@@ -101,6 +143,7 @@ static void ProcessUartCommands(void) {
       sample_rate_t next = pipeline_next_sample_rate();
       SetLedForSampleRate(next);
       freq_print_flag = true;
+      ui_update_flag = true;
       break;
     }
 
@@ -141,6 +184,7 @@ static void ProcessUartCommands(void) {
       // Avanza cíclicamente al siguiente modo de procesamiento DSP (Filtros FIR)
       pipeline_next_processing_mode();
       dsp_mode_print_flag = true;
+      ui_update_flag = true;
       break;
     }
 
@@ -199,7 +243,12 @@ int main(void) {
   SetLedForSampleRate(initial_rate);
   pipeline_set_sample_rate(initial_rate);
 
+  /* Inicialización de la interfaz gráfica (OLED): dibuja la pantalla completa y queda lista
+   * para aplicar actualizaciones parciales en el loop principal */
+  ui_init();
+
   freq_print_flag = true;
+  ui_update_flag = true;
 
   while (1) {
     /* 1. Tarea periódica de transmisión UART (Serial Plotter) */
@@ -243,6 +292,7 @@ int main(void) {
                (unsigned int)pipeline_get_sample_rate_hz(), (unsigned int)pipeline_get_overrun_count());
       }
       dsp_mode_print_flag = true;
+      ui_update_flag = true;
     }
 
     /* 7. Notificación de modo DSP */
@@ -252,6 +302,13 @@ int main(void) {
       }
       dsp_mode_print_flag = false;
     }
+
+    /* 8. Actualización de la interfaz gráfica (OLED): solo fuera de ISR */
+    if (ui_update_flag) {
+      ui_update_flag = false;
+      UpdateUiFromDsp();
+    }
+    ui_process();
   }
 
   return 0;
@@ -276,6 +333,7 @@ void GPIO0_INT_0_IRQHANDLER(void) {
   sample_rate_t new_rate = pipeline_next_sample_rate();
   SetLedForSampleRate(new_rate);
   freq_print_flag = true;
+  ui_update_flag = true;
 
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags0, 0U);
 
@@ -286,13 +344,14 @@ void GPIO0_INT_0_IRQHANDLER(void) {
 
 /**
  * @brief Manejador de interrupción GPIO01_IRQn (Pulsador SW2).
- *        Alterna el estado entre RUN y STOP.
+ *        Alterna el modo de procesamiento DSP.
  */
 void GPIO0_INT_1_IRQHANDLER(void) {
   uint32_t pin_flags1 = GPIO_GpioGetInterruptChannelFlags(GPIO0, 1U);
 
   pipeline_next_processing_mode();
   dsp_mode_print_flag = true;
+  ui_update_flag = true;
 
   GPIO_GpioClearInterruptChannelFlags(GPIO0, pin_flags1, 1U);
 
