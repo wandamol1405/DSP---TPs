@@ -124,4 +124,9 @@ processing_mode_t pipeline_get_processing_mode(void);
  */
 const char* pipeline_get_processing_mode_name(void);
 
+/**
+ * @brief Obtiene la cantidad de coeficientes (taps) del filtro actual (0 en BYPASS).
+ */
+uint16_t pipeline_get_num_taps(void);
+
 #endif /* PIPELINE_H_ */

@@ -214,6 +214,28 @@ const char* processing_stage_get_mode_name(processing_mode_t mode) {
     }
 }
 
+uint16_t processing_stage_get_num_taps(void) {
+    processing_mode_t mode = s_current_mode;
+    sample_rate_t rate = s_current_rate;
+    if (rate >= SAMPLE_RATE_COUNT) {
+        return 0;
+    }
+    switch (mode) {
+        case PROCESSING_MODE_LOWPASS:
+            return fir_config_lp[rate].numTaps;
+        case PROCESSING_MODE_HIGHPASS:
+            return fir_config_hp[rate].numTaps;
+        case PROCESSING_MODE_BANDPASS:
+            return fir_config_bp[rate].numTaps;
+        case PROCESSING_MODE_BANDSTOP:
+            // Camino multirate: decimation AA + complemento del notch + interpolation AA
+            return (uint16_t)(2U * bs_mr_config[rate].numTapsAA + bs_mr_config[rate].numTapsComp);
+        case PROCESSING_MODE_BYPASS:
+        default:
+            return 0;
+    }
+}
+
 void processing_stage_set_sample_rate(sample_rate_t rate) {
     s_current_rate = rate;
     s_reconfig_pending = true;

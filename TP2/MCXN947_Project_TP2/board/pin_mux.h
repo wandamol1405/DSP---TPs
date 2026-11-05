@@ -192,6 +192,14 @@ void BOARD_InitADCPins(void);
  */
 void BOARD_InitDACPins(void);
 
+#define PCR_IBE_ibe1 0x01u /*!<@brief Input Buffer Enable: Enables */
+
+/*!
+ * @brief Configures pin routing and optionally pin electrical features.
+ *
+ */
+void BOARD_InitI2CPins(void);
+
 #if defined(__cplusplus)
 }
 #endif

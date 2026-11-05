@@ -208,3 +208,7 @@ processing_mode_t pipeline_get_processing_mode(void) {
 const char* pipeline_get_processing_mode_name(void) {
     return processing_stage_get_mode_name(processing_stage_get_mode());
 }
+
+uint16_t pipeline_get_num_taps(void) {
+    return processing_stage_get_num_taps();
+}

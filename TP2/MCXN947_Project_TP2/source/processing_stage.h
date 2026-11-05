@@ -67,6 +67,12 @@ processing_mode_t processing_stage_get_mode(void);
 const char* processing_stage_get_mode_name(processing_mode_t mode);
 
 /**
+ * @brief Obtiene la cantidad de coeficientes (taps) del filtro activo para el modo
+ *        y frecuencia de muestreo actuales (0 en BYPASS).
+ */
+uint16_t processing_stage_get_num_taps(void);
+
+/**
  * @brief Notifica a la etapa de procesamiento que la frecuencia de muestreo cambió,
  *        permitiendo reconfigurar los coeficientes del filtro FIR si está activo.
  * @param rate Nueva frecuencia de muestreo.
