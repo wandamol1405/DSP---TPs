@@ -17,6 +17,7 @@
 #include "fsl_ctimer.h"
 #include "fsl_clock.h"
 #include "fsl_dac.h"
+#include "fsl_lpi2c.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -63,6 +64,13 @@ extern "C" {
 #define DAC0_IRQN DAC0_IRQn
 /* DAC0 interrupt handler identifier. */
 #define DAC0_IRQHANDLER DAC0_IRQHandler
+/* BOARD_InitPeripherals defines for LP_FLEXCOMM3 */
+/* Definition of peripheral ID */
+#define LP_FLEXCOMM3_PERIPHERAL LPI2C3
+/* Definition of peripheral base address */
+#define LP_FLEXCOMM3_PERIPHERAL_BASE LPI2C3_BASE
+/* Definition of the clock source frequency */
+#define LP_FLEXCOMM3_CLOCK_SOURCE 12000000UL
 
 /***********************************************************************************************************************
  * Global variables
@@ -74,6 +82,7 @@ extern const ctimer_config_t CTIMER0_config;
 extern const ctimer_match_config_t CTIMER0_Match_0_config;
 /* LPDAC configuration */
 extern const dac_config_t DAC0_config;
+extern const lpi2c_master_config_t LP_FLEXCOMM3_masterConfig;
 
 /***********************************************************************************************************************
  * Initialization functions
