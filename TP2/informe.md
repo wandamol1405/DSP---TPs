@@ -163,6 +163,7 @@ La ventaja para el elimina banda es que el número de taps depende de $\Delta f 
 | Consola | UART de debug de la placa (LPUART4 por el MCU-Link, `/dev/ttyACM0`), 115200 8N1 |
 | Pulsadores | **SW2** (PIO0_23 → `GPIO0_INT_0`): cambia la frecuencia de muestreo. **SW3** (PIO0_6 → `GPIO0_INT_1`): cambia el filtro. Flanco descendente. La ayuda de la consola los muestra al revés (ver [§9](#9-limitaciones-conocidas)) |
 | LED RGB | Indica la $f_s$: 8k rojo, 16k verde, 22k azul, 44k amarillo, 48k magenta |
+| Display OLED | Módulo OLED 0.96" SSD1306 (128×64 píxeles, panel bicolor amarillo/azul) vía **LPI2C2**: SDA en **P1_8 (J2[18])**, SCL en **P1_9 (J2[20])**, VCC 3.3 V y GND. Muestra modo activo, gráfico de respuesta, cantidad de taps, $f_s$, $f_c$ y $BW$ |
 
 ### 3.2 Frecuencias de muestreo reales
 
@@ -207,6 +208,8 @@ Se mantuvo la arquitectura modular del TP1 y se agregó la etapa de procesamient
 | `processing_stage` | Los 5 modos (BYPASS, LOWPASS, HIGHPASS, BANDPASS, BANDSTOP) y la reconfiguración diferida de los filtros CMSIS-DSP |
 | `dac_stage` | Conversión de Q15 a código de 12 bits y escritura en DAC0 |
 | `uart_stage` | Lectura no bloqueante de comandos, *streaming* para graficar en la PC y volcado de buffers |
+| `ui` | Interfaz gráfica sobre OLED (estado visual, layout en tiles, polilíneas de filtros y refresco parcial) |
+| `display_port` | Backend de comunicación I2C con el display (LPI2C2) y callbacks de tiempo para la biblioteca U8g2 |
 | `filter_coeffs.h`, `filter_coeffs_multirate.h` | Coeficientes generados por el script de Python (no se editan a mano) |
 
 ```mermaid
@@ -219,6 +222,12 @@ flowchart LR
     PSV -->|"FIR / multirate"| OUTB["s_blk_out[ready]"]
     PSV --> COUT[(buffer circular<br/>de salida, 512)]
     OUTB -->|una muestra por<br/>período, desde la ISR| DAC[DAC0<br/>12 bits]
+
+    subgraph UI_SYS [Lazo Principal: Visualización desacoplada]
+        MAIN[main loop] -->|ui_update_flag| UIA["UpdateUiFromDsp()<br/>ui_set_*()"]
+        UIA -->|sección crítica| UIP["ui_process()<br/>solo regiones dirty"]
+        UIP -->|I2C polling| OLED[Display OLED 128x64<br/>SSD1306 LPI2C2]
+    end
 ```
 
 ### 4.2 Flujo de datos por bloques
@@ -271,9 +280,50 @@ El MCXN947 implementa 3 bits de prioridad (0 = la más alta):
 | `ADC1_IRQn` | 0 (valor por defecto) | El muestreo y la salida al DAC no pueden demorarse |
 | `GPIO0_INT_0/1` (SW2/SW3) | 0 (valor por defecto) | No se configuró. Sus rutinas son cortas (cambian una variable y, en SW2, reprograman CTIMER0), así que pueden demorar la ISR del ADC solo unos microsegundos |
 | PendSV | 7 (configurada en `pipeline_init`) | El filtrado se ejecuta con todo el tiempo libre que queda y cualquier interrupción lo puede desalojar |
-| Lazo principal | — | Consola y mensajes, sin plazos |
+| Lazo principal | — | Consola y refresco de pantalla OLED, sin plazos estrictos |
 
-### 4.6 Interfaz de usuario
+### 4.6 Interfaz gráfica OLED (U8g2)
+
+Para visualizar en tiempo real el estado del sistema sin alterar la ejecución de la señal, se incorporó una pantalla OLED monocromática de 128×64 píxeles (controlador SSD1306) comunicada mediante el periférico **LPI2C2** (bus estándar a 100 kHz).
+
+#### Desacoplamiento y modelo de concurrencia
+La biblioteca gráfica utilizada es **U8g2** en modo *full buffer* (1024 bytes de framebuffer en RAM). Las operaciones sobre el bus I2C son bloqueantes por sondeo (*polling*). Si se transmitieran datos al display desde una ISR (como el ADC) o dentro de PendSV, se producirían pérdidas masivas de muestras (*overrun*).
+
+Por este motivo, se diseñó una estricta separación en tres capas:
+1. **Aplicación DSP (`MCXN947_Project_TP2.c`):** desconoce la existencia del display, coordenadas y comandos I2C. Al detectar cambios de frecuencia, pulsadores o sobrecarga, invoca funciones de notificación de alto nivel (`ui_set_sampling_frequency`, `ui_set_filter_type`, `ui_set_filter_taps`, etc.).
+2. **Módulo UI (`ui.c` / `ui.h`):** mantiene dos estructuras de estado (`s_pending` y `s_shown`). Las funciones públicas `ui_set_*()` solo actualizan `s_pending` y levantan una máscara de banderas *dirty* dentro de una sección crítica atómica (`DisableGlobalIRQ()` / `EnableGlobalIRQ()`), por lo que su ejecución insume apenas unos nanosegundos y puede invocarse con total seguridad desde cualquier contexto.
+3. **Lazo principal (`ui_process()`):** se llama únicamente desde el `while(1)` de `main`. Consume las banderas *dirty* y transmite al controlador únicamente las regiones de pantalla que hayan variado. De esta forma, si el ADC1 o PendSV necesitan ejecutarse, desalojan inmediatamente al lazo principal sin ningún bloqueo.
+
+#### Distribución de pantalla y refresco por tiles
+El panel físico empleado es del tipo bicolor de 0.96", donde las primeras 16 filas son amarillas y las 48 restantes son azules. La interfaz se adaptó para respetar esta frontera física y optimizar la legibilidad:
+
+```
+  x:  0..............47 | 48......................127
+  y0  +----------------------------------------------+
+      |               NOMBRE DEL FILTRO              |  HEADER (amarillo, 16x2 tiles)
+  y16 +------------------+---------------------------+
+      |     Gráfico      |  Fs:  48 kHz              |  FS (azul, 10x2 tiles)
+      |  de respuesta    |  Fc:  3.6 kHz             |  FC (azul, 10x2 tiles)
+  y48 |   [ 140 TAPS ]   |  BW:  --                  |  BW (azul, 10x2 tiles)
+  y63 +------------------+---------------------------+
+         TAPS (6x2 tiles)
+```
+
+- **Encabezado (`HEADER`, $y = 0..15$):** aprovecha la franja amarilla para mostrar en texto destacado y centrado el nombre del filtro (`BYPASS`, `LOWPASS`, `HIGHPASS`, `BANDPASS`, `BANDSTOP`).
+- **Gráfico de respuesta (`GRAPH`, $x = 0..47, y = 16..47$):** dibuja ejes y curvas de respuesta en frecuencia esquemáticas mediante polilíneas ligeras (cero costo de almacenamiento de bitmaps en flash).
+- **Indicador de coeficientes (`TAPS`, $x = 0..47, y = 48..63$):** recuadro en video inverso con el texto `"<N> TAPS"` (o `"-- TAPS"` en bypass). Al cambiar de $f_s$, los taps se actualizan inmediatamente para reflejar la complejidad computacional del filtro activo.
+- **Columna de parámetros ($x = 48..127$):** tres filas fijas alineadas para $F_s$, $F_c$ y $BW$.
+
+#### Granularidad de actualización parcial
+U8g2 organiza la pantalla en *tiles* de 8×8 píxeles. La primitiva `u8g2_UpdateDisplayArea(tx, ty, tw, th)` permite transmitir una ventana rectangular enviando únicamente las páginas y columnas de tiles correspondientes.
+
+Gracias a esto:
+- Si solo cambia la frecuencia de muestreo $F_s$, el firmware transmite únicamente las tiles de `REGION_FS` (160 bytes) y `REGION_TAPS` (96 bytes), en lugar de reescribir los 1024 bytes de la pantalla completa.
+- Si cambia el tipo de filtro, se refrescan `REGION_HEADER`, `REGION_GRAPH` y `REGION_TAPS`.
+- Si ningún parámetro cambia, `ui_process()` retorna de inmediato sin consumir ciclos de CPU ni transferir un solo byte por I2C.
+- Se verificó formalmente mediante un test en PC (`TP2/tests/ui_host/`) contra un simulador de memoria GDRAM que tras 3000 transiciones aleatorias de parámetros, la pantalla parcial resultante es bit a bit idéntica a una reconstrucción completa.
+
+### 4.7 Interfaz de usuario (pulsadores y comandos UART)
 
 | Entrada | Acción |
 | --- | --- |
@@ -604,6 +654,43 @@ DAC_SetData(DAC0_PERIPHERAL, code);
 ```
 
 Restar media escala centra la señal en 0. Los filtros que eliminan la continua (pasa altos y pasa banda) entregan una señal centrada en 0, que al volver al DAC queda centrada en VREFH/2. Los que la dejan pasar (pasa bajos, elimina banda y bypass) conservan el offset de la entrada. El paso a 12 bits trunca los 4 bits menos significativos.
+
+### 6.6 Módulo de interfaz gráfica y refresco parcial (`ui.c`)
+
+```c
+// Actualización selectiva en ui_process() según qué parámetros cambiaron
+void ui_process(void) {
+    if (!s_enabled) return;
+
+    // Copia atómica del estado pendiente
+    uint32_t primask = DisableGlobalIRQ();
+    ui_state_t want = s_pending;
+    uint8_t dirty = s_dirty;
+    s_dirty = 0;
+    EnableGlobalIRQ(primask);
+
+    if (dirty == 0u) return;
+
+    if ((dirty & UI_DIRTY_FILTER) != 0u && (want.filter != s_shown.filter)) {
+        s_shown.filter = want.filter;
+        draw_header(s_shown.filter);
+        flush_region(&REGION_HEADER);
+        draw_filter_graph(s_shown.filter);
+        flush_region(&REGION_GRAPH);
+    }
+    if ((dirty & UI_DIRTY_TAPS) != 0u && (want.taps != s_shown.taps)) {
+        s_shown.taps = want.taps;
+        draw_taps(s_shown.taps);
+        flush_region(&REGION_TAPS);
+    }
+    if ((dirty & UI_DIRTY_FS) != 0u && (want.fs_hz != s_shown.fs_hz)) {
+        s_shown.fs_hz = want.fs_hz;
+        draw_param(&REGION_FS, "Fs:", s_shown.fs_hz);
+        flush_region(&REGION_FS);
+    }
+    // (Fc y BW se tratan análogamente)
+}
+```
 
 ---
 
