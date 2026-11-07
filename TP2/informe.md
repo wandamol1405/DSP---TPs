@@ -161,7 +161,7 @@ La ventaja para el elimina banda es que el número de taps depende de $\Delta f 
 | Salida analógica | **DAC0** (12 bits), pin **P4_2 (J1[4])**, referencia VREFH, buffer de salida (op-amp) habilitado para manejar la punta del osciloscopio |
 | Disparo del ADC | **CTIMER0**, match 3 en modo *toggle* (ver 3.2) |
 | Consola | UART de debug de la placa (LPUART4 por el MCU-Link, `/dev/ttyACM0`), 115200 8N1 |
-| Pulsadores | **SW3** (PIO0_0 → `GPIO0_INT_0`): cambia la frecuencia de muestreo. **SW2** (PIO0_1 → `GPIO0_INT_1`): cambia el filtro. Flanco descendente |
+| Pulsadores | **SW2** (PIO0_23 → `GPIO0_INT_0`): cambia la frecuencia de muestreo. **SW3** (PIO0_6 → `GPIO0_INT_1`): cambia el filtro. Flanco descendente |
 | LED RGB | Indica la $f_s$: 8k rojo, 16k verde, 22k azul, 44k amarillo, 48k magenta |
 | Display OLED | Módulo OLED 0.96" SSD1306 (128×64 píxeles, panel bicolor amarillo/azul) vía **LPI2C2**: SDA en **P1_8 (J2[18])**, SCL en **P1_9 (J2[20])**, VCC 3.3 V y GND. Muestra modo activo, gráfico de respuesta, cantidad de taps, $f_s$, $f_c$ y $BW$ |
 
@@ -696,8 +696,7 @@ Copiar los coeficientes del filtro activo a RAM al reconfigurarlo es una mejora 
 
 La respuesta en frecuencia teórica y en punto fijo Q15 de cada uno de los filtros implementados se encuentra detallada en las tablas de [§5.2](#52-pasa-bajos-pasa-altos-y-pasa-banda-una-etapa-equirizados) y [§5.4](#54-elimina-banda-multirate).
 
-Las curvas completas de magnitud, fase, rizado y atenuación para todas las frecuencias de muestreo ($8$, $16$, $22$, $44$ y $48\text{ kHz}$) pueden consultarse y reproducirse interactivamente en la notebook de diseño:
-👉 [`disenio_filtros_tp2_equiripple.ipynb`](./filtros/disenio_filtros_tp2_equiripple.ipynb)
+Las curvas completas de magnitud, fase, rizado y atenuación para todas las frecuencias de muestreo ($8$, $16$, $22$, $44$ y $48\text{ kHz}$) pueden consultarse y reproducirse interactivamente en la notebook de diseño: [`disenio_filtros_tp2_equiripple.ipynb`](./filtros/disenio_filtros_tp2_equiripple.ipynb).
 
 A modo de ejemplo comparativo del impacto del método de diseño sobre el orden del filtro, la siguiente gráfica ilustra la respuesta en frecuencia del filtro **pasa banda** diseñado con el algoritmo equirizado (Parks-McClellan, en magenta; 150 taps a 8 kHz) frente al diseño clásico por ventana de Kaiser (en azul; 346 taps a 8 kHz) bajo las mismas especificaciones de plantilla:
 

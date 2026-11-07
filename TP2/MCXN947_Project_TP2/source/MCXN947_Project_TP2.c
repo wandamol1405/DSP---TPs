@@ -195,11 +195,11 @@ static void ProcessUartCommands(void) {
       if (!uart_stage_is_streaming_enabled()) {
         PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
         PRINTF("  'r': Alternar RUN / STOP\r\n");
-        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k) [SW3]\r\n");
+        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k) [SW2]\r\n");
         PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
         PRINTF("  'p': Activar/Desactivar streaming continuo para Serial Plotter\r\n");
         PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
-        PRINTF("  'm': Alternar modo de procesamiento DSP (Filtros/Bypass) [SW2]\r\n");
+        PRINTF("  'm': Alternar modo de procesamiento DSP (Filtros/Bypass) [SW3]\r\n");
         PRINTF("  'h': Mostrar esta ayuda\r\n");
         PRINTF("=================================\r\n\r\n");
       }
@@ -324,7 +324,7 @@ void PendSV_Handler(void) {
 }
 
 /**
- * @brief Manejador de interrupción GPIO00_IRQn (Pulsador SW3).
+ * @brief Manejador de interrupción GPIO00_IRQn (Pulsador SW2).
  *        Cambia a la siguiente frecuencia de muestreo.
  */
 void GPIO0_INT_0_IRQHANDLER(void) {
@@ -343,7 +343,7 @@ void GPIO0_INT_0_IRQHANDLER(void) {
 }
 
 /**
- * @brief Manejador de interrupción GPIO01_IRQn (Pulsador SW2).
+ * @brief Manejador de interrupción GPIO01_IRQn (Pulsador SW3).
  *        Alterna el modo de procesamiento DSP.
  */
 void GPIO0_INT_1_IRQHANDLER(void) {
