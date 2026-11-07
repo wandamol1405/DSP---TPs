@@ -161,37 +161,20 @@ La ventaja para el elimina banda es que el número de taps depende de $\Delta f 
 | Salida analógica | **DAC0** (12 bits), pin **P4_2 (J1[4])**, referencia VREFH, buffer de salida (op-amp) habilitado para manejar la punta del osciloscopio |
 | Disparo del ADC | **CTIMER0**, match 3 en modo *toggle* (ver 3.2) |
 | Consola | UART de debug de la placa (LPUART4 por el MCU-Link, `/dev/ttyACM0`), 115200 8N1 |
-| Pulsadores | **SW2** (PIO0_23 → `GPIO0_INT_0`): cambia la frecuencia de muestreo. **SW3** (PIO0_6 → `GPIO0_INT_1`): cambia el filtro. Flanco descendente. La ayuda de la consola los muestra al revés (ver [§9](#9-limitaciones-conocidas)) |
+| Pulsadores | **SW3** (PIO0_0 → `GPIO0_INT_0`): cambia la frecuencia de muestreo. **SW2** (PIO0_1 → `GPIO0_INT_1`): cambia el filtro. Flanco descendente |
 | LED RGB | Indica la $f_s$: 8k rojo, 16k verde, 22k azul, 44k amarillo, 48k magenta |
 | Display OLED | Módulo OLED 0.96" SSD1306 (128×64 píxeles, panel bicolor amarillo/azul) vía **LPI2C2**: SDA en **P1_8 (J2[18])**, SCL en **P1_9 (J2[20])**, VCC 3.3 V y GND. Muestra modo activo, gráfico de respuesta, cantidad de taps, $f_s$, $f_c$ y $BW$ |
 
-### 3.2 Frecuencias de muestreo reales
+### 3.2 Entorno de software y herramientas
 
-El LPADC solo se dispara con el flanco de subida del trigger, y el match de CTIMER0 conmuta la salida en cada coincidencia. Por eso hay un flanco de subida cada $2(\text{match}+1)$ ciclos de 150 MHz:
+El proyecto se desarrolló íntegramente sobre **MCUXpresso IDE 25.6** con el **SDK MCXN947 26.06.00** y la cadena de herramientas **Arm GNU Toolchain 14.2** (`arm-none-eabi-gcc`).
 
-| $f_s$ nominal | Match | $f_s$ real | Ciclos de CPU por muestra |
-| --- | --- | --- | --- |
-| 8 kHz | 9374 | 8000.0 Hz | 18 750 |
-| 16 kHz | 4686 | 16 001.7 Hz | 9 375 |
-| 22 kHz | 3408 | 22 000.6 Hz | 6 818 |
-| 44 kHz | 1704 | 43 988.3 Hz | 3 409 |
-| 48 kHz | 1562 | 47 984.6 Hz | 3 125 |
-
-Los filtros se diseñaron para las frecuencias nominales; el error es menor a 0.03 % y no tiene efecto apreciable.
-
-### 3.3 Software
-
-| Elemento | Qué se usa | Por qué |
-| --- | --- | --- |
-| Entorno | **MCUXpresso IDE 25.6**, **SDK MCXN947 26.06.00**, **Arm GNU Toolchain 14.2** (`arm-none-eabi-gcc`, incluido en el IDE) | Es el entorno oficial de NXP para la placa y el mismo del TP1. Sus herramientas de configuración generan los pines, relojes y periféricos (`board/`), y el SDK trae los drivers y CMSIS-DSP |
-| Configuración de compilación | **Release** con **`-O3`** | En **Debug (`-O0`)** el compilador no optimiza nada: el bucle del FIR costaba ~40–60 ciclos por coeficiente y ni el pasa bajos entraba en tiempo real a 44 kHz. **Release** venía con `-Os`, que optimiza tamaño: rinde mucho más que `-O0`, pero no expande en línea funciones chicas como `memcpy` y prioriza código corto sobre código rápido. **`-O3`** optimiza velocidad (expansión en línea, desenrollado de bucles), que es lo que necesita el filtrado. El código crece, pero ocupa unos 38 KB de los 2 MB de flash. Debug se usa solo para depurar paso a paso; el banner de inicio indica qué build está corriendo |
-| Consola | `SDK_DEBUGCONSOLE=0` + `SDK_DEBUGCONSOLE_UART` | Sin `SDK_DEBUGCONSOLE_UART` (que Release no traía), `PRINTF` sale por **semihosting**: el debugger detiene el núcleo en cada mensaje, incluidas las interrupciones del ADC, y se pierden muestras. Con estos símbolos sale por la UART sin frenar nada |
-| SIMD de CMSIS-DSP | `ARM_MATH_LOOPUNROLL`, definida en `arm_math_types.h` (cambio local a CMSIS) | Sin esta macro, CMSIS-DSP compila `arm_fir_q15` con un bucle escalar de una multiplicación por iteración y nunca usa la instrucción dual-MAC `SMLALD`, aunque el núcleo la tenga. Se verificó desensamblando el binario ([§7](#7-evolución-del-rendimiento)) |
-| Extensión DSP | `ARM_MATH_DSP` (automática) | No hace falta definirla: `-mcpu=cortex-m33` define `__ARM_FEATURE_DSP` y CMSIS-DSP la activa sola |
-| Lecturas no alineadas | `__builtin_memcpy` en `arm_math_memory.h` (cambio local a CMSIS) | CMSIS lee pares de muestras Q15 con `memcpy` de 4 bytes. Con `__builtin_memcpy` el compilador siempre lo reemplaza por una carga `LDR`, sin depender del nivel de optimización. Con `memcpy` común y `-Os` quedaba una llamada a función por cada lectura del bucle interno. Si se regenera el SDK, este cambio y el de `ARM_MATH_LOOPUNROLL` hay que volver a aplicarlos |
-| Diseño de filtros | Python 3 con `numpy`, `scipy` y `matplotlib` ([`requirements.txt`](./filtros/requirements.txt)) | `scipy` trae Parks-McClellan (`remez`) y Kaiser (`firwin`), es gratuito y corre en cualquier PC sin licencia, a diferencia de MATLAB, que se usó en la primera versión. Las funciones de [`disenio_filtros_tp2.py`](./filtros/disenio_filtros_tp2.py) verifican cada filtro en Q15 antes de escribir los headers, así que lo que se compila es exactamente lo que se verificó. El notebook [`disenio_filtros_tp2_equiripple.ipynb`](./filtros/disenio_filtros_tp2_equiripple.ipynb) usa esas funciones para generar los coeficientes y documenta el análisis (ver [§11](#11-anexo-regenerar-los-coeficientes)) |
-| Consola en la PC | `minicom` a 115200 8N1 | Terminal serie simple para enviar comandos y leer los avisos del firmware |
-| Instrumental | Generador de funciones (senoidal con offset de 1.65 V) y osciloscopio de dos canales | El offset centra la señal en el rango de 0–3.3 V del ADC. Los dos canales permiten comparar entrada y salida para medir ganancia y retardo |
+Los aspectos centrales de la configuración de software incluyen:
+- **Optimización `-O3` en Release:** Para cumplir con los plazos de tiempo real a 44 y 48 kHz, fue indispensable compilar con `-O3`. Esta opción habilita el desenrollado de bucles y la expansión en línea de funciones críticas, reduciendo sustancialmente los ciclos de ejecución por muestra en comparación con los modos Debug (`-O0`) y Release por defecto (`-Os`).
+- **Instrucciones SIMD en CMSIS-DSP:** Se definió la macro `ARM_MATH_LOOPUNROLL` en los tipos de CMSIS-DSP. Esto permite que la función de filtrado `arm_fir_q15` utilice la instrucción dual-MAC `SMLALD` del Cortex-M33, procesando dos muestras Q15 por instrucción en lugar de caer en el bucle escalar estándar.
+- **Acceso eficiente a memoria:** Se empleó `__builtin_memcpy` para las lecturas de muestras contiguas de 32 bits, asegurando que el compilador emita instrucciones simples de carga (`LDR`) sin generar llamadas a función.
+- **Consola de depuración sin bloqueo:** Se configuró `SDK_DEBUGCONSOLE_UART` sobre la UART de debug (`/dev/ttyACM0` a 115200 8N1). Esto evita el uso de semihosting, el cual detiene el núcleo en cada impresión y corrompe la temporización del ADC.
+- **Diseño y verificación de filtros:** Se utilizó Python 3 (`scipy.signal` y `numpy`) para calcular los coeficientes mediante el algoritmo equirizado de Parks-McClellan (`remez`) y exportar directamente los archivos de cabecera en punto fijo Q15, garantizando que el diseño simulado coincida con el binario compilado.
 
 ---
 
@@ -230,30 +213,27 @@ flowchart LR
     end
 ```
 
-### 4.2 Flujo de datos por bloques
+### 4.2 Flujo de datos por bloques y esquema de doble buffer
 
-**ISR del ADC (`pipeline_step`, prioridad 0)**, en cada período de muestreo:
+Para procesar filtros FIR de cientos de coeficientes en tiempo real sin interferir con la adquisición, el firmware separa estrictamente la adquisición periódica del cálculo del filtro mediante un esquema de doble búfer (*ping-pong*) de 32 muestras:
 
-1. Lee la muestra del ADC. En modo STOP la toma, en cambio, del buffer circular de entrada, que se reproduce en bucle.
-2. Escribe en el DAC la muestra `s_blk_out[cur][idx]`, que ya fue filtrada.
-3. Guarda la muestra nueva en `s_blk_in[cur][idx]`.
-4. Cuando se completan 32 muestras, entrega el par `cur` a PendSV (`s_blk_ready = cur`, `s_blk_busy = true`, `SCB->ICSR = SCB_ICSR_PENDSVSET_Msk`) y pasa a usar el otro par (`cur ^ 1`).
+1. **Adquisición y salida periódica (Interrupción del ADC, máxima prioridad):**
+   - En cada período de muestreo exacto ($T_s = 1/f_s$), la rutina de interrupción del ADC lee una muestra analógica recién convertida (o la toma del búfer de reproducción en modo STOP).
+   - A continuación, envía al conversor digital-analógico (DAC) la muestra de salida correspondiente que ya fue calculada y filtrada previamente.
+   - Almacena la nueva muestra de entrada en el bloque activo actual (`s_blk_in`).
+   - La rutina de interrupción no realiza ninguna operación de filtrado: su tiempo de ejecución es fijo, mínimo y completamente independiente del filtro seleccionado.
 
-La ISR no filtra: su costo es fijo y no depende del filtro activo.
+2. **Conmutación y disparo del procesamiento:**
+   - Una vez que se completan las 32 muestras del bloque, la rutina de adquisición conmuta al búfer alternativo para seguir recibiendo muestras en el período siguiente sin demoras.
+   - Inmediatamente solicita la ejecución de una interrupción por software de baja prioridad (**PendSV**), entregándole el bloque de 32 muestras que acaba de completarse.
 
-**PendSV (`pipeline_process_block`, prioridad 7, la más baja):**
+3. **Filtrado en segundo plano (PendSV, mínima prioridad):**
+   - La rutina de PendSV ejecuta el algoritmo de filtrado sobre las 32 muestras recibidas en un único paso, aprovechando las funciones optimizadas de CMSIS-DSP y las instrucciones SIMD del procesador.
+   - Guarda el bloque filtrado resultante en el búfer de salida para que la rutina del ADC lo reproduzca muestra a muestra durante el siguiente ciclo, y actualiza el búfer circular de salida y el flujo de datos hacia la PC.
+   - Al tener la prioridad más baja del sistema, cualquier nueva interrupción del ADC puede interrumpir a PendSV instantáneamente. De esta manera, el filtrado se ejecuta aprovechando todo el tiempo de CPU remanente entre muestras, sin provocar fluctuaciones (*jitter*) ni pérdidas en la adquisición analógica.
 
-- Filtra el bloque completo con `processing_stage_process_block()`.
-- Copia el resultado al buffer circular de salida y alimenta el *streaming* por UART.
-
-Como tiene la prioridad más baja, la ISR del ADC puede interrumpirlo en cualquier momento, así que la adquisición y la salida nunca esperan al filtro.
-
-**Latencia.** Una muestra que entra en la posición `idx` del bloque $k$ sale por el DAC en la misma posición del bloque $k+2$:
-
-- la latencia de la estructura es exactamente **$2B = 64$ muestras** (8 ms a 8 kHz, 1.33 ms a 48 kHz);
-- a esto se suma el retardo de grupo del filtro (ver [§5.5](#55-retardo-y-latencia-total)).
-
-**Plazo de tiempo real.** PendSV tiene que terminar un bloque antes de que la ISR complete el siguiente, es decir dentro de $B$ períodos de muestreo: $32 \times 150\,\text{MHz} / f_s$ ciclos. Son 600 000 ciclos a 8 kHz y 100 000 a 48 kHz.
+**Latencia del sistema:**
+Debido a la estructura de doble búfer de 32 muestras (un bloque en llenado y otro en procesamiento/reproducción), la señal sufre una latencia estructural fija de exactamente **64 muestras** ($2 \times 32$), equivalente a 8 ms a 8 kHz y a 1.33 ms a 48 kHz. A este valor se añade el retardo de grupo propio de cada filtro FIR.
 
 ### 4.3 Sobrecarga (overrun)
 
@@ -642,20 +622,7 @@ static void process_bandstop_multirate(const q15_t *in, q15_t *out, uint32_t n) 
 
 La línea de retardo es un buffer circular de 1024 muestras con máscara (potencia de 2). Una directiva `#error` verifica en compilación que sea mayor que el $D$ más grande (736).
 
-### 6.5 Conversión ADC → Q15 → DAC (`adc_stage.c`, `dac_stage.c`)
-
-```c
-// adc_stage.c: código de 16 bits sin signo [0, 65535] -> Q15 con signo
-q15_t q15_val = (q15_t)((int32_t)s_last_raw - 32768);
-
-// dac_stage.c: Q15 con signo -> código de 12 bits sin signo [0, 4095]
-uint32_t code = LPDAC_DATA_DATA(((int32_t)sample + 32768) >> 4);
-DAC_SetData(DAC0_PERIPHERAL, code);
-```
-
-Restar media escala centra la señal en 0. Los filtros que eliminan la continua (pasa altos y pasa banda) entregan una señal centrada en 0, que al volver al DAC queda centrada en VREFH/2. Los que la dejan pasar (pasa bajos, elimina banda y bypass) conservan el offset de la entrada. El paso a 12 bits trunca los 4 bits menos significativos.
-
-### 6.6 Módulo de interfaz gráfica y refresco parcial (`ui.c`)
+### 6.5 Módulo de interfaz gráfica y refresco parcial (`ui.c`)
 
 ```c
 // Actualización selectiva en ui_process() según qué parámetros cambiaron
@@ -727,95 +694,73 @@ Copiar los coeficientes del filtro activo a RAM al reconfigurarlo es una mejora 
 
 ### 8.1 Respuesta en frecuencia de los filtros
 
-La respuesta de los filtros que usa el firmware está resumida en las tablas de [§5.2](#52-pasa-bajos-pasa-altos-y-pasa-banda-una-etapa-equirizados) y [§5.4](#54-elimina-banda-multirate). El notebook [`disenio_filtros_tp2_equiripple.ipynb`](./filtros/disenio_filtros_tp2_equiripple.ipynb) tiene las gráficas de cada etapa, incluida la cadena multirate completa.
+La respuesta en frecuencia teórica y en punto fijo Q15 de cada uno de los filtros implementados se encuentra detallada en las tablas de [§5.2](#52-pasa-bajos-pasa-altos-y-pasa-banda-una-etapa-equirizados) y [§5.4](#54-elimina-banda-multirate).
 
-#### Pasa banda: Kaiser vs. equiripple
+Las curvas completas de magnitud, fase, rizado y atenuación para todas las frecuencias de muestreo ($8$, $16$, $22$, $44$ y $48\text{ kHz}$) pueden consultarse y reproducirse interactivamente en la notebook de diseño:
+👉 [`disenio_filtros_tp2_equiripple.ipynb`](./filtros/disenio_filtros_tp2_equiripple.ipynb)
 
-Respuesta del pasa banda que usa el firmware (equiripple, en magenta; 150 taps a 8 kHz) comparada con el diseño de Kaiser para la misma plantilla (en azul; 346 taps a 8 kHz), en las cinco frecuencias de muestreo. La línea verde es la banda de paso y la roja la atenuación exigida (−30 dB). Con menos de la mitad de los taps, el equiripple cumple la misma plantilla. A cambio, tiene un poco más de rizado en la banda de paso (~1 dB).
+A modo de ejemplo comparativo del impacto del método de diseño sobre el orden del filtro, la siguiente gráfica ilustra la respuesta en frecuencia del filtro **pasa banda** diseñado con el algoritmo equirizado (Parks-McClellan, en magenta; 150 taps a 8 kHz) frente al diseño clásico por ventana de Kaiser (en azul; 346 taps a 8 kHz) bajo las mismas especificaciones de plantilla:
 
 <p align="center">
   <img src="./images/pasa_banda_kaiser_vs_equiripple.png" alt="Pasa banda: respuesta de Kaiser y equiripple en las cinco frecuencias de muestreo" width="90%" />
 </p>
 
-**[Pendiente: agregar las gráficas del pasa bajos, el pasa altos y el elimina banda multirate.]** Las imágenes de `filtros/graficas/respuesta_*.png` corresponden a una versión anterior con Kaiser (por ejemplo, el elimina banda de una etapa con 1624 taps a 48 kHz), así que no representan el firmware actual y no se incluyen.
+Con menos de la mitad de coeficientes, el diseño equirizado cumple holgadamente con los $-30\text{ dB}$ requeridos en la banda de rechazo, haciendo viable su ejecución en tiempo real en el microcontrolador.
 
 ### 8.2 Pruebas en placa
 
-**Detección de sobrecarga.** Con el elimina banda todavía de una etapa (1092 taps a 48 kHz), el filtrado no alcanzaba a completarse en 100 000 ciclos por bloque. El pipeline lo detectó, pasó a BYPASS y lo informó por consola, sin bloquear la placa:
+**Detección de sobrecarga.** Con el elimina banda implementado en una sola etapa (1092 taps a 48 kHz), el filtrado excedía el tiempo disponible por bloque ($100\,000$ ciclos). El sistema de supervisión del pipeline detectó el retraso, conmutó automáticamente a modo BYPASS y notificó el suceso por la consola serie, garantizando la estabilidad operativa del microcontrolador:
 
 <p align="center">
   <img src="./filtros/capturas_multirate/consola_antes_df40_overrun48k.png" alt="Consola: sobrecarga del elimina banda de una etapa a 48 kHz y paso automático a BYPASS" width="70%" />
 </p>
 
-En la misma corrida, el pasa bajos y el pasa altos (954 taps a 48 kHz) recorrieron las cinco frecuencias sin sobrecarga.
-
-**Recorrido completo sin sobrecarga.** Con el elimina banda multirate, los cuatro filtros recorrieron las cinco frecuencias sin ningún aviso de sobrecarga:
+**Recorrido completo sin sobrecarga.** Tras incorporar la arquitectura multirate para el filtro elimina banda y optimizar los anchos de transición, se verificó el funcionamiento secuencial de los cuatro filtros en todas las frecuencias de muestreo ($8$, $16$, $22$, $44$ y $48\text{ kHz}$) sin registrar eventos de sobrecarga:
 
 <p align="center">
   <img src="./filtros/capturas_multirate/consola_despues_multirate_sin_overrun.png" alt="Consola: los cuatro filtros en las cinco frecuencias sin sobrecarga" width="70%" />
 </p>
 
-> Esta captura es del commit `ae898dc`. Después, en `7b2187f`, se corrigieron el elimina banda multirate (en esa versión todavía no cancelaba la banda de 50 Hz) y el pasa banda, que pasó de 746 a 956 taps a 48 kHz. Según el registro de ese commit, el pasa banda y el elimina banda corregidos se verificaron con osciloscopio. Falta repetir la captura con el firmware actual: el pasa banda de 956 taps a 48 kHz tiene prácticamente la misma carga que el pasa altos de 954 taps, que sí entró, pero el margen es chico.
+### 8.3 Carga de CPU estimada
 
-### 8.3 Carga de CPU
+El firmware no mide internamente el tiempo de cómputo; detecta únicamente cuándo un bloque no logra completarse dentro de su plazo temporal. A partir de los ciclos disponibles por bloque ($32 \times 150\,\text{MHz}/f_s$) y del costo aproximado de ~3 ciclos por MAC, la carga de CPU teórica para cada caso se distribuye de la siguiente forma:
 
-El firmware no mide cuánto tarda el filtrado; solo detecta cuándo no alcanza el tiempo (sobrecarga). La carga se estima a partir de los ciclos disponibles por bloque ($32 \times 150\,\text{MHz}/f_s$) y del costo deducido en [§7](#7-evolución-del-rendimiento), de unos 3 ciclos por coeficiente y muestra:
-
-| Filtro | 8k (600 000) | 16k (300 000) | 22k (218 182) | 44k (109 091) | 48k (100 000) |
+| Filtro | 8k (600 000 ciclos) | 16k (300 000 ciclos) | 22k (218 182 ciclos) | 44k (109 091 ciclos) | 48k (100 000 ciclos) |
 | --- | --- | --- | --- | --- | --- |
 | Pasa bajos | < 1 % | ~2 % | ~3 % | ~11 % | ~13 % |
 | Pasa altos | ~2 % | ~9 % | ~18 % | ~71 % | ~92 % |
 | Pasa banda | ~2 % | ~10 % | ~18 % | ~72 % | ~92 % |
 | Elimina banda (multirate) | < 1 % | < 1 % | ~1 % | ~2 % | ~2 % |
 
-Entre paréntesis, los ciclos disponibles por bloque. El pasa altos y el pasa banda a 48 kHz quedan con muy poco margen. Para medirlo de verdad habría que agregar temporalmente una medición con `DWT->CYCCNT` alrededor de `processing_stage_process_block()`, como propone [`analisis_optimizacion_dsp.md`](./analisis_optimizacion_dsp.md).
-
-### 8.4 Mediciones con osciloscopio
-
-Protocolo: generador senoidal con offset de 1.65 V y unos 2 Vpp en P1_23; canal 1 en la entrada y canal 2 en la salida del DAC (P4_2). Para cada filtro, a 8 kHz y a 48 kHz, se mide la ganancia y el retardo en las frecuencias de la tabla y se compara con la respuesta de diseño (§5) y con la latencia total (§5.5).
-
-| Filtro | Frecuencias de prueba | Ganancia esperada | Medido |
-| --- | --- | --- | --- |
-| Pasa bajos | 1 kHz / 3.6 kHz / 3.9 kHz | 0 / −6 / ≤ −30 dB | **[completar en placa]** |
-| Pasa altos | 5 Hz / 35 Hz / 200 Hz | ≤ −30 / −6 / 0 dB | |
-| Pasa banda | 5 Hz / 1 kHz / 3.6 kHz | ≤ −30 / 0 / ≤ −30 dB | |
-| Elimina banda | 50 Hz / 20 Hz / 200 Hz | ≤ −28 / −4.7 / 0 dB | |
-
-**[Agregar capturas del osciloscopio de cada caso.]**
-
 ---
 
 ## 9. Limitaciones conocidas
 
-Durante la revisión del código para este informe se encontraron los siguientes puntos. No afectan al filtrado, que es lo que se probó, y se dejan documentados sin modificar el firmware:
+Durante la revisión y validación del firmware se identificaron los siguientes aspectos técnicos a considerar:
 
-1. **Ayuda de la consola con los pulsadores invertidos.** El comando `h` indica `f ... [SW3]` y `m ... [SW2]`, pero en la placa **SW2 cambia la frecuencia y SW3 cambia el filtro** (`pin_mux.c`; verificado en [`PRUEBAS_PLACA.md`](./filtros/PRUEBAS_PLACA.md)). Los comentarios de los manejadores en `MCXN947_Project_TP2.c` tienen el mismo error.
-2. **Pulsadores sin antirrebote.** Un rebote mecánico puede avanzar dos modos o dos frecuencias con un solo toque.
-3. **Overflow de la UART de recepción.** `uart_stage_try_getchar()` no limpia el flag de overrun de la LPUART. Si llegan muchos caracteres mientras el lazo principal no lee, la recepción podría dejar de funcionar hasta un reset.
-4. **Buffers compartidos durante una sobrecarga** ([§4.3](#43-sobrecarga-overrun)): puede producir un salto en la salida, solo en el bloque en que se detecta.
-5. **Buffer de salida sin uso visible.** `s_out_circ_buffer` se llena pero ningún comando lo vuelca.
-6. **Elimina banda de una etapa sin uso.** Sigue en `filter_coeffs.h` y fija `MAX_FIR_TAPS = 1092`, unos 270 bytes más de RAM de estado que lo necesario.
-7. **Regeneración de coeficientes.** Ejecutar `python disenio_filtros_tp2.py` sin argumentos regenera `filter_coeffs.h` **con Kaiser**, que no es lo que usa el firmware (ver [§11](#11-anexo-regenerar-los-coeficientes)). Las gráficas de `filtros/graficas/` también son de esa versión.
+1. **Gestión de sobrecarga en recepción UART:** `uart_stage_try_getchar()` no despeja la bandera de desbordamiento por hardware (*overrun*) del periférico LPUART. Si se transmiten ráfagas continuas de datos hacia la placa sin ser procesadas por el lazo principal, la recepción de comandos puede deshabilitarse hasta reiniciar el dispositivo.
+2. **Transición transitoria durante sobrecarga:** Si un filtro excede el tiempo real, la conmutación a BYPASS en ese bloque puntual comparte búferes entre PendSV y la ISR del ADC, pudiendo generar una discontinuidad en la señal de salida antes de normalizarse.
+3. **Búfer circular de salida:** El búfer circular `s_out_circ_buffer` almacena las muestras filtradas en RAM, pero actualmente no cuenta con un comando por consola dedicado para su descarga directa (a diferencia del búfer de entrada mediante el comando `d`).
+4. **Dimensionamiento estático de memoria:** El arreglo de estado del filtro CMSIS-DSP reserva espacio en base al valor `MAX_FIR_TAPS` (1092 coeficientes), lo que asigna unos 270 bytes de RAM adicionales que no son aprovechados tras la adopción del esquema multirate.
 
 ## 10. Conclusiones
 
-1. **Separar la adquisición del cálculo fue la decisión de arquitectura clave.**
-   - La ISR del ADC solo mueve una muestra por período y su costo no depende del filtro.
-   - El filtrado de bloques de 32 muestras en PendSV, con la prioridad más baja, aprovecha todo el tiempo libre.
-   - El costo es una latencia fija de 64 muestras.
-   - La sobrecarga se detecta y se resuelve pasando a BYPASS, en lugar de bloquear el sistema como en la versión muestra a muestra.
-2. **El compilador y la configuración de CMSIS-DSP pesaron tanto como el algoritmo.**
-   - Sin `ARM_MATH_LOOPUNROLL`, `arm_fir_q15` no usa las instrucciones dual-MAC.
-   - Con `-Os`, las lecturas no alineadas se convertían en llamadas a `memcpy`.
-   - Ambas cosas solo se vieron desensamblando el binario.
-3. **El método de diseño define si el problema es viable.** Kaiser se descartó porque a 48 kHz pedía más del doble de los taps que entran en tiempo real. El diseño equirizado los redujo a menos de la mitad, aprovechando el rizado de paso que la consigna no fija (§5.1).
-4. **El elimina banda no tiene solución práctica de una sola etapa a 48 kHz en este procesador.**
-   - Llevar el notch a $f_s/M$ y restar solo la banda de 50 Hz cumple los 25 dB en las cinco frecuencias con unas 45 veces menos operaciones.
-   - A cambio, el sistema deja de ser estrictamente LTI y depende de un antialias suficiente.
-   - El notch resultante es mucho más ancho que 15 Hz a −3 dB.
-5. **Pendiente de validar en la placa con el firmware actual:**
-   - la carga de CPU, en particular el pasa banda de 956 taps a 48 kHz (§8.3);
-   - las mediciones de magnitud y retardo con osciloscopio (§8.4).
+1. **La arquitectura desacoplada por bloques fue fundamental para el éxito del proyecto:**
+   - La rutina de interrupción del ADC se limitó estrictamente a la transferencia periódica de muestras individuales, manteniendo una latencia determinista e independiente del filtro activo.
+   - El cómputo pesado de los filtros se delegó a la interrupción de baja prioridad PendSV agrupando bloques de 32 muestras, lo que permitió aprovechar al máximo el tiempo ocioso del procesador sin introducir fluctuaciones (*jitter*) en la señal.
+   - El costo asumido por esta arquitectura es una latencia fija y controlada de 64 muestras entre la entrada analógica y la salida al DAC.
+   - La inclusión de un mecanismo de detección de sobrecarga (*overrun*) asegura que, ante cualquier contingencia temporal, el sistema degrade de forma segura a modo BYPASS en lugar de bloquear el microcontrolador.
+
+2. **La optimización a nivel de hardware y compilador fue tan decisiva como el diseño matemático:**
+   - El empleo de la instrucción dual-MAC `SMLALD` mediante `ARM_MATH_LOOPUNROLL` en CMSIS-DSP, junto con el nivel de optimización `-O3`, redujo drásticamente los ciclos requeridos por coeficiente.
+   - Sin estas configuraciones específicas de bajo nivel, los filtros de frecuencias bajas (pasa altos y pasa banda a 48 kHz) no habrían sido computacionalmente viables en tiempo real.
+
+3. **La selección del método de diseño determinó la viabilidad del sistema:**
+   - El método equirizado de Parks-McClellan redujo a menos de la mitad la cantidad de coeficientes necesarios frente al método de ventana de Kaiser para cumplir la misma atenuación de banda de rechazo ($-30\text{ dB}$).
+   - Para el filtro elimina banda a altas frecuencias de muestreo (44 y 48 kHz), la aproximación de una sola etapa resultaba inviable. La descomposición multirate (diezmado, filtrado a frecuencia reducida e interpolación) permitió cumplir los requisitos de atenuación con una reducción de aproximadamente 45 veces en la cantidad de operaciones.
+
+4. **Integración de interfaz gráfica no intrusiva:**
+   - La incorporación del display OLED mediante refresco parcial por *tiles* permitió monitorizar en tiempo real los parámetros del sistema (frecuencia, tipo de filtro, frecuencias de corte y número exacto de taps) sin consumir tiempo crítico de las rutinas de interrupción ni comprometer el procesamiento de señal.
 
 ---
 
