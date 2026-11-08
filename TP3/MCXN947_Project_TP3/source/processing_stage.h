@@ -3,7 +3,9 @@
  *
  * Etapa de procesamiento digital de señales (DSP).
  * Módulo portable e independiente del hardware de periféricos.
- * Implementa la estructura y el control de los filtros FIR del TP2.
+ *
+ * TP3: los filtros FIR del TP2 se quitaron. Por ahora la etapa solo hace bypass;
+ * la FFT se agrega en la issue #15.
  */
 
 #ifndef PROCESSING_STAGE_H_
@@ -15,22 +17,17 @@
 #include "adc_stage.h" // Para usar sample_rate_t
 
 /*
- * Tamaño de bloque del FIR, en muestras. El pipeline acumula PROCESSING_BLOCK_SIZE
- * muestras del ADC y las filtra juntas: arm_fir_q15 copia el estado una vez por bloque
- * (no una por muestra) y usa SIMD. Agrega 2 bloques de latencia (64 muestras = 8 ms a
- * 8 kHz, 1.3 ms a 48 kHz). Debe ser múltiplo de 4 (camino rápido de arm_fir_q15).
+ * Tamaño de bloque heredado del TP2, en muestras. El pipeline acumula
+ * PROCESSING_BLOCK_SIZE muestras del ADC y las procesa juntas. Se reemplaza por la
+ * ventana de N muestras (512/1024/2048) en la parte de buffers e ISR de la issue #14.
  */
 #define PROCESSING_BLOCK_SIZE 32U
 
 /**
- * @brief Modos de operación del bloque de procesamiento (TP2).
+ * @brief Modos de operación del bloque de procesamiento.
  */
 typedef enum {
     PROCESSING_MODE_BYPASS = 0,    /**< Entrada directa a salida (Bypass) */
-    PROCESSING_MODE_LOWPASS,       /**< Filtro FIR Pasa Bajos (Fc = 3600 Hz, Astop = 30 dB) */
-    PROCESSING_MODE_HIGHPASS,      /**< Filtro FIR Pasa Altos (Fc = 35 Hz, Astop = 30 dB) */
-    PROCESSING_MODE_BANDPASS,      /**< Filtro FIR Pasa Banda (35 Hz - 3500 Hz, Astop = 30 dB) */
-    PROCESSING_MODE_BANDSTOP,      /**< Filtro FIR Elimina Banda (Notch 50 Hz, BW = 15 Hz) */
     PROCESSING_MODE_COUNT
 } processing_mode_t;
 
@@ -38,11 +35,6 @@ typedef enum {
  * @brief Inicializa la etapa de procesamiento DSP.
  */
 void processing_stage_init(void);
-
-/*
- * Los setters de modo y frecuencia solo registran el cambio: se aplica al comienzo del
- * próximo processing_stage_process_block(). Se pueden llamar desde cualquier ISR.
- */
 
 /**
  * @brief Configura el modo de procesamiento de forma directa.
@@ -67,22 +59,18 @@ processing_mode_t processing_stage_get_mode(void);
 const char* processing_stage_get_mode_name(processing_mode_t mode);
 
 /**
- * @brief Obtiene la cantidad de coeficientes (taps) del filtro activo para el modo
- *        y frecuencia de muestreo actuales (0 en BYPASS).
+ * @brief Cantidad de coeficientes (taps) del filtro activo. Sin filtros FIR, siempre 0.
  */
 uint16_t processing_stage_get_num_taps(void);
 
 /**
- * @brief Notifica a la etapa de procesamiento que la frecuencia de muestreo cambió,
- *        permitiendo reconfigurar los coeficientes del filtro FIR si está activo.
+ * @brief Notifica a la etapa de procesamiento que la frecuencia de muestreo cambió.
  * @param rate Nueva frecuencia de muestreo.
  */
 void processing_stage_set_sample_rate(sample_rate_t rate);
 
 /**
- * @brief Procesa un bloque de muestras contiguas.
- *        Antes de filtrar aplica el cambio de modo/frecuencia pendiente, si lo hay
- *        (reinicializa el FIR). Debe llamarse siempre desde el mismo contexto.
+ * @brief Procesa un bloque de muestras contiguas (por ahora, copia la entrada a la salida).
  * @param in Puntero al arreglo de entrada.
  * @param out Puntero al arreglo de salida.
  * @param length Cantidad de muestras a procesar.

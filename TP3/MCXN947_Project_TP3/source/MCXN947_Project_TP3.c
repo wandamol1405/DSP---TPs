@@ -39,12 +39,7 @@ static volatile bool ui_update_flag = false;      // pide sincronizar el estado 
 
 /**
  * @brief Parámetros nominales de visualización asociados a cada modo del DSP.
- *
- * Los filtros se diseñan en disenio_filtros_tp2.py con especificaciones fijas en Hz:
- *   - Pasa bajos : Fc = 3600 Hz
- *   - Pasa altos : Fc = 35 Hz
- *   - Pasa banda : banda de paso [35, 3500] Hz -> Fc central = 1768 Hz, BW = 3465 Hz
- *   - Elimina banda : rechazo centrado en Fr = 50 Hz, BW = 15 Hz
+ *        Sin los filtros FIR del TP2, solo queda BYPASS (sin Fc ni BW).
  */
 typedef struct {
   ui_filter_t ui_type;
@@ -53,11 +48,7 @@ typedef struct {
 } dsp_mode_ui_info_t;
 
 static const dsp_mode_ui_info_t s_mode_ui_info[PROCESSING_MODE_COUNT] = {
-    [PROCESSING_MODE_BYPASS]   = {UI_FILTER_BYPASS,   UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
-    [PROCESSING_MODE_LOWPASS]  = {UI_FILTER_LOWPASS,  3600u,             UI_FREQUENCY_NONE},
-    [PROCESSING_MODE_HIGHPASS] = {UI_FILTER_HIGHPASS, 35u,               UI_FREQUENCY_NONE},
-    [PROCESSING_MODE_BANDPASS] = {UI_FILTER_BANDPASS, 1768u,             3465u},
-    [PROCESSING_MODE_BANDSTOP] = {UI_FILTER_BANDSTOP, 50u,               15u},
+    [PROCESSING_MODE_BYPASS] = {UI_FILTER_BYPASS, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
 };
 
 /**
