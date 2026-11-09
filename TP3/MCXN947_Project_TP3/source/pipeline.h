@@ -20,6 +20,19 @@
 // Tamaño del buffer circular interno del pipeline, en muestras (según consigna del TP1).
 #define PIPELINE_BUFFER_SIZE 512
 
+// Tamaño máximo de ventana (N), en muestras. Dimensiona los dos buffers del ping-pong.
+#define PIPELINE_MAX_FRAME 2048U
+
+/**
+ * @brief Tamaños de ventana (N) disponibles para la FFT.
+ */
+typedef enum {
+    FFT_SIZE_512 = 0,
+    FFT_SIZE_1024,
+    FFT_SIZE_2048,
+    FFT_SIZE_COUNT
+} fft_size_t;
+
 /**
  * @brief Inicializa el pipeline y todas sus etapas asociadas.
  */
@@ -27,15 +40,34 @@ void pipeline_init(void);
 
 /**
  * @brief Ejecuta un paso del pipeline. Se invoca al ritmo de la tasa de muestreo (ISR del ADC).
- *        Mueve muestras hacia el buffer ping-pong y al DAC; al completar un bloque dispara PendSV.
+ *        Guarda la muestra en la ventana que se está llenando y la repite por el DAC; al
+ *        completar N muestras dispara PendSV.
  */
 void pipeline_step(void);
 
 /**
- * @brief Procesa el bloque de muestras que quedó listo en el pipeline.
+ * @brief Procesa la ventana de N muestras que quedó lista en el pipeline.
  *        Se invoca desde PendSV_Handler fuera de la ISR del ADC.
  */
 void pipeline_process_block(void);
+
+/**
+ * @brief Avanza cíclicamente al siguiente tamaño de ventana (512 -> 1024 -> 2048 -> 512).
+ *        El cambio es diferido: se aplica recién cuando arranca la próxima ventana.
+ * @return El tamaño seleccionado.
+ */
+fft_size_t pipeline_next_fft_size(void);
+
+/**
+ * @brief Obtiene el tamaño de ventana seleccionado (puede no haberse aplicado todavía
+ *        a la ventana que se está llenando).
+ */
+fft_size_t pipeline_get_fft_size(void);
+
+/**
+ * @brief Obtiene el tamaño de ventana seleccionado, en muestras (512, 1024 o 2048).
+ */
+uint32_t pipeline_get_fft_size_n(void);
 
 /**
  * @brief Consulta si ocurrió una sobrecarga de procesamiento (overrun)
@@ -45,7 +77,7 @@ void pipeline_process_block(void);
 bool pipeline_take_overrun(void);
 
 /**
- * @brief Obtiene la cantidad acumulada de bloques no procesados a tiempo.
+ * @brief Obtiene la cantidad acumulada de ventanas no procesadas a tiempo.
  */
 uint32_t pipeline_get_overrun_count(void);
 

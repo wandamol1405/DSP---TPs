@@ -16,13 +16,6 @@
 #include "arm_math.h" // tipo q15_t y funciones de CMSIS-DSP
 #include "adc_stage.h" // Para usar sample_rate_t
 
-/*
- * Tamaño de bloque heredado del TP2, en muestras. El pipeline acumula
- * PROCESSING_BLOCK_SIZE muestras del ADC y las procesa juntas. Se reemplaza por la
- * ventana de N muestras (512/1024/2048) en la parte de buffers e ISR de la issue #14.
- */
-#define PROCESSING_BLOCK_SIZE 32U
-
 /**
  * @brief Modos de operación del bloque de procesamiento.
  */
