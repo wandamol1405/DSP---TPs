@@ -127,6 +127,10 @@ bool display_port_init(u8g2_t *u8g2) {
     u8g2_SetPowerSave(u8g2, 0U);
 
     if (s_last_lpi2c_status != kStatus_Success) {
+        // Sin guardia de uart_stage_any_streaming_active() a proposito: esto corre en
+        // ui_init(), antes de que el loop principal (y por lo tanto cualquier modo de
+        // streaming) pueda estar activo -- mismo caso que el banner de arranque en
+        // MCXN947_Project_TP3.c, ver el TODO ahi para el detalle del riesgo (minimo).
         PRINTF("[DISPLAY] Aviso: LPI2C reporto estado %d durante la inicializacion del display.\r\n",
                (int)s_last_lpi2c_status);
         return false;
