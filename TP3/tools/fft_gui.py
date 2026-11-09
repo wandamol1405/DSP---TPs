@@ -383,7 +383,10 @@ class FftGuiApp(tk.Tk):
         top.pack(side=tk.TOP, fill=tk.X)
 
         ttk.Label(top, text="Puerto:").pack(side=tk.LEFT)
-        self._port_combo = ttk.Combobox(top, width=20, state="readonly")
+        # Editable (no "readonly"): permite pegar a mano un puerto que no
+        # aparece en el autodetectado de pyserial, como el pty que arma
+        # TP3/tests/fake_board.py para probar la GUI sin placa.
+        self._port_combo = ttk.Combobox(top, width=20)
         self._port_combo.pack(side=tk.LEFT, padx=4)
         self._refresh_ports()
         ttk.Button(top, text="Refrescar", command=self._refresh_ports).pack(side=tk.LEFT, padx=4)
