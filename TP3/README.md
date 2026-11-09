@@ -42,7 +42,7 @@ El desarrollo se organiza según los issues de GitHub:
 
 2. **[Issue #15](https://github.com/wandamol1405/DSP---TPs/issues/15) - Implementación de la FFT con CMSIS-DSP y modo Bypass**:
    - Alternancia entre modo **FFT** y modo **Bypass** (buffer de salida independiente del de entrada).
-   - Cálculo de la FFT mediante `arm_rfft_fast_f32` (aprovechando FPU) con enventanado (Rectangular / Hann) y magnitud en dBFS (`arm_cmplx_mag_f32` + `log10`).
+   - Cálculo de la FFT en punto fijo $q_{15}$, como el resto del pipeline: remoción de la media, enventanado (Rectangular / Hann, tablas $q_{15}$), `arm_rfft_q15`, magnitud con `arm_cmplx_mag_q15` y búsqueda del pico con `arm_max_q15`. La conversión a dBFS se hace en la PC.
    - Medición de ciclos de CPU mediante DWT (`CYCCNT`).
 
 3. **[Issue #16](https://github.com/wandamol1405/DSP---TPs/issues/16) - Transmisión del resultado por UART**:
@@ -60,7 +60,7 @@ El desarrollo se organiza según los issues de GitHub:
 | Campo | Tipo | Tamaño | Descripción |
 | :--- | :--- | :--- | :--- |
 | **Sync** | uint16 | 2 B | `0xA5 0x5A` |
-| **Type** | uint8 | 1 B | `0` = FFT (dB × 100), `1` = Bypass ($q_{15}$) |
+| **Type** | uint8 | 1 B | `0` = FFT (magnitud $q_{15}$, salida de `arm_cmplx_mag_q15`), `1` = Bypass ($q_{15}$) |
 | **Window** | uint8 | 1 B | `0` = Rectangular, `1` = Hann |
 | **N** | uint16 | 2 B | Tamaño de ventana ($512, 1024, 2048$) |
 | **Length** | uint16 | 2 B | Cantidad de puntos en el payload ($N/2$ para FFT, $N$ para Bypass) |
