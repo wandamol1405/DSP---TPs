@@ -147,6 +147,10 @@ static void ProcessUartCommands(void) {
     case 'p':
     case 'P': {
       // El modo activo reserva el UART para líneas CSV compatibles con Serial-Oscilloscope.
+      // TODO(TP3): cuando exista una ventana de salida FFT/Bypass real del pipeline
+      // (issues #14/#15), este 'p' pasa a imprimir esa ventana con
+      // uart_stage_print_samples() en vez del streaming muestra-a-muestra de TP2
+      // -- ver el comentario grande en uart_stage.h.
       bool streaming = !uart_stage_is_streaming_enabled();
       uart_stage_enable_streaming(streaming);
       if (!streaming) {
@@ -163,16 +167,50 @@ static void ProcessUartCommands(void) {
                                     ? UART_STREAM_MODE_OSCILLOSCOPE
                                     : UART_STREAM_MODE_PLOTTER;
       uart_stage_set_stream_mode(next);
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         PRINTF("[UART] Formato streaming: %s\r\n",
                next == UART_STREAM_MODE_OSCILLOSCOPE ? "SERIAL-OSCILLOSCOPE" : "PLOTTER");
       }
       break;
     }
 
+    case 'c':
+    case 'C': {
+      // Streaming binario continuo para la GUI (TP3/tools/fft_gui.py, rama de GUI).
+      // Mutuamente excluyente con 'p': uart_stage_enable_binary_streaming() ya se
+      // encarga de apagar el de texto si estaba activo.
+      bool enable = !uart_stage_is_binary_streaming_enabled();
+      uart_stage_enable_binary_streaming(enable);
+      if (!enable) {
+        PRINTF("[UART] Streaming binario: DESACTIVADO\r\n");
+      }
+      break;
+    }
+
+    case 's':
+    case 'S':
+      // Pide una unica ventana de salida (FFT o Bypass) sin activar el modo continuo.
+      // La consume quien produzca la ventana (todavia no existe, ver issues #14/#15)
+      // junto con uart_stage_is_binary_streaming_enabled() para decidir si enviarla.
+      uart_stage_request_single_frame();
+      break;
+
+    case 't':
+    case 'T':
+      if (!uart_stage_any_streaming_active()) {
+        PRINTF("[UART] Tramas binarias: %u enviadas, %u descartadas\r\n",
+               (unsigned int)uart_stage_get_frames_sent(), (unsigned int)uart_stage_get_frames_dropped());
+      }
+      break;
+
     case 'm':
     case 'M': {
-      // Avanza cíclicamente al siguiente modo de procesamiento DSP (Filtros FIR)
+      // Avanza ciclicamente al siguiente modo de procesamiento DSP.
+      // TODO(TP3): el equipo decidio que este comando/SW3 va a recorrer Bypass y
+      // los 3 tamanos de ventana de FFT (512/1024/2048) en un solo ciclo -- eso lo
+      // implementa quien se ocupe de las issues #14/#15 (ventanas N + FFT/Bypass),
+      // no esta issue. Una vez mergeado ese cambio, actualizar el texto de ayuda de
+      // 'm' mas abajo y el comentario del handler de SW3 para reflejar los modos reales.
       pipeline_next_processing_mode();
       dsp_mode_print_flag = true;
       ui_update_flag = true;
@@ -183,14 +221,17 @@ static void ProcessUartCommands(void) {
     case 'H':
     case '?':
       // Imprime el menú de ayuda con todos los comandos disponibles
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
         PRINTF("  'r': Alternar RUN / STOP\r\n");
         PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k) [SW2]\r\n");
         PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
-        PRINTF("  'p': Activar/Desactivar streaming continuo para Serial Plotter\r\n");
+        PRINTF("  'p': Activar/Desactivar streaming de TEXTO (excluyente con 'c')\r\n");
         PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
-        PRINTF("  'm': Alternar modo de procesamiento DSP (Filtros/Bypass) [SW3]\r\n");
+        PRINTF("  'm': Alternar modo de procesamiento DSP [SW3]\r\n");
+        PRINTF("  'c': Activar/Desactivar streaming BINARIO para la GUI (excluyente con 'p')\r\n");
+        PRINTF("  's': Enviar/imprimir una unica ventana de salida\r\n");
+        PRINTF("  't': Mostrar tramas binarias enviadas/descartadas\r\n");
         PRINTF("  'h': Mostrar esta ayuda\r\n");
         PRINTF("=================================\r\n\r\n");
       }
@@ -215,6 +256,18 @@ int main(void) {
   BOARD_InitDebugConsole();
 #endif
 
+  // TODO(TP3, issues #14/#15): "Etapas: ADC -> Ventana N -> FFT/Bypass -> UART/OLED"
+  // describe el plan, no el pipeline actual (sigue siendo el bloque de 32 heredado
+  // de TP2, sin ventana N ni FFT real) -- revisar que siga siendo cierto una vez
+  // implementadas esas issues, y a esa altura ya no hace falta este TODO.
+  //
+  // Este banner (y el resto de este bloque) no esta guardado por
+  // uart_stage_any_streaming_active() porque corre antes de que exista cualquier
+  // estado de streaming (arranca en false). El unico caso en que molestaria es un
+  // reset de la placa con la GUI ya conectada en modo 'c' -- improbable pero real:
+  // si llega a pasar, el parser de la GUI lo loguea como texto sin romper nada (no
+  // hay forma de que este texto ASCII genere por accidente el sync 0xA5 0x5A), asi
+  // que no es grave, solo ensucia el log hasta la proxima trama binaria.
   PRINTF("\r\n========================================\r\n");
   PRINTF("  TP3 DSP - FFT (FRDM-MCXN947)\r\n");
 #if defined(DEBUG)
@@ -250,7 +303,7 @@ int main(void) {
 
     /* 3. Notificación de estado RUN / STOP */
     if (adc_print_flag) {
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         if (pipeline_is_running()) {
           PRINTF("[RUN]: Adquisicion activada\r\n");
         } else {
@@ -262,7 +315,7 @@ int main(void) {
 
     /* 4. Notificación de frecuencia de muestreo */
     if (freq_print_flag) {
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         PRINTF("[INFO] Frecuencia de muestreo: %u Hz\r\n", (unsigned int)pipeline_get_sample_rate_hz());
       }
       freq_print_flag = false;
@@ -270,7 +323,7 @@ int main(void) {
 
     /* 5. Volcado de buffer solicitado */
     if (buffer_dump_flag) {
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         pipeline_dump_to_uart(true);
       }
       buffer_dump_flag = false;
@@ -278,7 +331,7 @@ int main(void) {
 
     /* 6. Aviso de sobrecarga: el filtro no llegó a procesar un bloque a tiempo y se pasó a BYPASS */
     if (pipeline_take_overrun()) {
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         PRINTF("[DSP] Sobrecarga: el filtro no entra en tiempo real a %u Hz -> BYPASS (bloques perdidos: %u)\r\n",
                (unsigned int)pipeline_get_sample_rate_hz(), (unsigned int)pipeline_get_overrun_count());
       }
@@ -288,7 +341,7 @@ int main(void) {
 
     /* 7. Notificación de modo DSP */
     if (dsp_mode_print_flag) {
-      if (!uart_stage_is_streaming_enabled()) {
+      if (!uart_stage_any_streaming_active()) {
         PRINTF("[DSP] Modo/Filtro activo: %s\r\n", pipeline_get_processing_mode_name());
       }
       dsp_mode_print_flag = false;
@@ -335,7 +388,8 @@ void GPIO0_INT_0_IRQHANDLER(void) {
 
 /**
  * @brief Manejador de interrupción GPIO01_IRQn (Pulsador SW3).
- *        Alterna el modo de procesamiento DSP.
+ *        Alterna el modo de procesamiento DSP (ver TODO en el case 'm' de
+ *        ProcessUartCommands para el ciclo de modos que falta implementar).
  */
 void GPIO0_INT_1_IRQHANDLER(void) {
   uint32_t pin_flags1 = GPIO_GpioGetInterruptChannelFlags(GPIO0, 1U);

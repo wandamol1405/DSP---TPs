@@ -2,9 +2,26 @@
  * uart_stage.h
  *
  * Etapa de comunicación UART: transmisión de datos adquiridos y procesados hacia la PC.
- * Soporta:
- *  - Modo Serial Plotter (streaming en tiempo real para visualizadores en PC).
- *  - Modo Dump de Buffer (volcado de las 512 muestras para análisis en Python / MATLAB).
+ *
+ * Dos caminos de salida para la ventana de FFT/Bypass (ver TP3/README.md,
+ * "Formato de Trama UART"):
+ *  - Binario ('c', uart_stage_send_frame()): no bloqueante, pensado para
+ *    que lo decodifique la GUI (TP3/tools/fft_gui.py, en la rama de GUI).
+ *  - Texto ('p', uart_stage_print_samples()): bloqueante, un valor por
+ *    línea, para mirarlo con un terminal común (minicom) sin la GUI.
+ * Mutuamente excluyentes -- no tiene que haber un envío binario en curso
+ * mientras se imprime texto (comparten el mismo LPUART4, un PRINTF en el
+ * medio de una transferencia no bloqueante podría entreverar bytes).
+ *
+ * 'p' todavía no quedó re-enganchado a uart_stage_print_samples(): sigue
+ * con el streaming muestra-a-muestra heredado de TP2
+ * (uart_stage_feed_sample()/uart_stage_task()) porque todavía no existe
+ * una ventana de salida FFT/Bypass real del pipeline (issues #14/#15,
+ * en curso en paralelo). Cuando esa salida exista, 'p' pasa a llamar a
+ * uart_stage_print_samples() y el camino viejo se puede sacar.
+ *
+ * El volcado de buffer ('d', uart_stage_dump_buffer()) queda igual que en
+ * TP2 por ahora (vuelca el buffer circular crudo, no la salida FFT/Bypass).
  */
 
 #ifndef UART_STAGE_H_
@@ -24,13 +41,119 @@ typedef enum {
 } uart_stream_mode_t;
 
 /**
+ * @brief Tipo de trama binaria que arma uart_stage_send_frame() (ver
+ *        TP3/README.md, "Formato de Trama UART" -- protocolo minimo: solo
+ *        lo que pide la consigna, transmitir el buffer de salida y poder
+ *        graficarlo en la PC).
+ */
+typedef enum {
+    UART_FRAME_TYPE_FFT = 0,     /**< Magnitud en dBFS x100. Length = N/2 */
+    UART_FRAME_TYPE_BYPASS = 1,  /**< Muestras q15. Length = N */
+} uart_frame_type_t;
+
+/**
  * @brief Inicializa la etapa UART.
  */
 void uart_stage_init(void);
 
 /**
+ * @brief Arma y transmite (no bloqueante, por interrupcion) una trama
+ *        binaria con el buffer de salida (FFT o Bypass). No hace nada si
+ *        ya hay un envio en curso -- el llamador tiene que chequear
+ *        uart_stage_tx_busy() antes de copiar/liberar la salida del
+ *        pipeline, para no perder la ventana si la UART todavia esta
+ *        ocupada con la anterior.
+ * @param type    UART_FRAME_TYPE_FFT o UART_FRAME_TYPE_BYPASS.
+ * @param n       Tamano de ventana (512, 1024 o 2048).
+ * @param fs_hz   Frecuencia de muestreo, en Hz.
+ * @param payload Puntero a los datos: N/2 valores si type es FFT, N si es
+ *                BYPASS (se deriva de type y n, no hace falta pasarlo).
+ */
+void uart_stage_send_frame(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, const int16_t *payload);
+
+/**
+ * @brief Indica si hay una trama binaria en curso de transmision.
+ */
+bool uart_stage_tx_busy(void);
+
+/**
+ * @brief Imprime por UART (bloqueante, vía PRINTF) los valores de una
+ *        ventana de salida (FFT o Bypass), uno por línea, para poder
+ *        mirarlos con un terminal de texto común (minicom) sin la GUI.
+ *        Es el equivalente en texto de uart_stage_send_frame() -- mismos
+ *        parámetros, mismo origen de datos, pero plano y legible en vez
+ *        de binario.
+ *
+ *        Llamar SOLO desde el loop principal, nunca desde PendSV: al ser
+ *        bloqueante (son hasta 2048 líneas), haría exactamente lo que esta
+ *        issue busca evitar -- frenar el refresco del OLED. El llamador
+ *        decide cuándo invocarla (por ejemplo, una ventana sí y varias no),
+ *        no hay un "busy" que lo decida solo como en el modo binario.
+ * @param type    UART_FRAME_TYPE_FFT o UART_FRAME_TYPE_BYPASS.
+ * @param n       Tamaño de ventana (512, 1024 o 2048).
+ * @param fs_hz   Frecuencia de muestreo, en Hz.
+ * @param payload Puntero a los datos: N/2 valores si type es FFT, N si es
+ *                BYPASS (se deriva de type y n, no hace falta pasarlo).
+ */
+void uart_stage_print_samples(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, const int16_t *payload);
+
+/**
+ * @brief Activa o desactiva el streaming binario continuo (comando 'c').
+ *        Mutuamente excluyente con el streaming de texto ('p'): activar
+ *        uno desactiva el otro (lo hace esta misma función, no hace falta
+ *        que el llamador se ocupe), no pueden competir por el mismo LPUART.
+ */
+void uart_stage_enable_binary_streaming(bool enable);
+
+/**
+ * @brief Consulta si el streaming binario continuo está activo.
+ */
+bool uart_stage_is_binary_streaming_enabled(void);
+
+/**
+ * @brief Indica si hay CUALQUIER modo de streaming activo (texto 'p' o
+ *        binario 'c') -- para las notificaciones de estado que no deben
+ *        contaminar ninguno de los dos. Reemplaza los usos sueltos de
+ *        uart_stage_is_streaming_enabled() en los que antes solo
+ *        importaba el streaming de texto.
+ */
+bool uart_stage_any_streaming_active(void);
+
+/**
+ * @brief Pide el envío/impresión de una única ventana de salida (comando
+ *        's'), sin activar el modo continuo.
+ */
+void uart_stage_request_single_frame(void);
+
+/**
+ * @brief Consulta si hay un pedido de ventana única pendiente y lo limpia
+ *        (se consume una sola vez). Pensada para que la llame el
+ *        productor de la ventana (pipeline) junto con
+ *        uart_stage_is_binary_streaming_enabled() para decidir si
+ *        corresponde mandar la ventana que acaba de quedar lista.
+ */
+bool uart_stage_consume_single_frame_request(void);
+
+/**
+ * @brief Cantidad de tramas binarias enviadas con éxito desde el boot.
+ */
+uint32_t uart_stage_get_frames_sent(void);
+
+/**
+ * @brief Cantidad de tramas binarias descartadas desde el boot (ventana
+ *        lista pero la UART todavía estaba ocupada con la anterior).
+ */
+uint32_t uart_stage_get_frames_dropped(void);
+
+/**
  * @brief Alimenta una muestra del pipeline para streaming UART.
  *        Aplica decimación para no saturar el baudrate en frecuencias altas.
+ *
+ *        Camino heredado de TP2 (muestra a muestra, no por ventana) -- hoy
+ *        'p' lo sigue usando porque todavía no hay una salida FFT/Bypass
+ *        real del pipeline (issues #14/#15). El día que eso exista, 'p'
+ *        pasa a llamar a uart_stage_print_samples() en su lugar y esto
+ *        debería poder sacarse.
  * @param in_sample Muestra cruda/adquirida (Q15).
  * @param out_sample Muestra procesada (Q15).
  */
