@@ -20,8 +20,9 @@
 // Tamaño del buffer circular interno del pipeline, en muestras (según consigna del TP1).
 #define PIPELINE_BUFFER_SIZE 512
 
-// Tamaño máximo de ventana (N), en muestras. Dimensiona los dos buffers del ping-pong.
-#define PIPELINE_MAX_FRAME 2048U
+// Tamaño máximo de ventana (N), en muestras. Dimensiona los dos buffers del ping-pong y el
+// de salida; es el mismo máximo que soporta la etapa de procesamiento.
+#define PIPELINE_MAX_FRAME PROCESSING_MAX_FRAME
 
 /**
  * @brief Tamaños de ventana (N) disponibles para la FFT.
@@ -32,6 +33,16 @@ typedef enum {
     FFT_SIZE_2048,
     FFT_SIZE_COUNT
 } fft_size_t;
+
+/**
+ * @brief Descriptor de una ventana: con qué configuración se tomó. Se captura cuando
+ *        arranca la ventana, así no cambia aunque se toque Fs, N o el modo mientras se llena.
+ */
+typedef struct {
+    uint32_t fs_hz;   /**< Frecuencia de muestreo, en Hz */
+    uint16_t n;       /**< Cantidad de muestras de la ventana */
+    uint8_t mode;     /**< processing_mode_t con el que se procesa (BYPASS o FFT) */
+} frame_info_t;
 
 /**
  * @brief Inicializa el pipeline y todas sus etapas asociadas.
@@ -52,20 +63,8 @@ void pipeline_step(void);
 void pipeline_process_block(void);
 
 /**
- * @brief Avanza cíclicamente al siguiente tamaño de ventana (512 -> 1024 -> 2048 -> 512).
- *        El cambio es diferido: se aplica recién cuando arranca la próxima ventana.
- * @return El tamaño seleccionado.
- */
-fft_size_t pipeline_next_fft_size(void);
-
-/**
- * @brief Obtiene el tamaño de ventana seleccionado (puede no haberse aplicado todavía
- *        a la ventana que se está llenando).
- */
-fft_size_t pipeline_get_fft_size(void);
-
-/**
  * @brief Obtiene el tamaño de ventana seleccionado, en muestras (512, 1024 o 2048).
+ *        Puede no haberse aplicado todavía a la ventana que se está llenando.
  */
 uint32_t pipeline_get_fft_size_n(void);
 
@@ -129,10 +128,6 @@ void pipeline_set_sample_rate(sample_rate_t rate);
  */
 circular_buffer_t* pipeline_get_circular_buffer(void);
 
-/**
- * @brief Obtiene el puntero al buffer circular de salida del pipeline.
- */
-circular_buffer_t* pipeline_get_output_circular_buffer(void);
 
 /**
  * @brief Vuelca el buffer circular por UART para análisis en PC.
@@ -141,8 +136,10 @@ circular_buffer_t* pipeline_get_output_circular_buffer(void);
 void pipeline_dump_to_uart(bool format_csv);
 
 /**
- * @brief Avanza cíclicamente al siguiente modo de procesamiento.
- * @return El nuevo modo de procesamiento.
+ * @brief Avanza al siguiente modo del ciclo BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS
+ *        (SW3 y comando 'm'). En BYPASS se mantiene el último N. El cambio es diferido: se
+ *        aplica recién cuando arranca la próxima ventana.
+ * @return El nuevo modo de procesamiento (el N se consulta con pipeline_get_fft_size_n()).
  */
 processing_mode_t pipeline_next_processing_mode(void);
 

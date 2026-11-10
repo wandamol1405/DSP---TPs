@@ -49,6 +49,9 @@ typedef struct {
 
 static const dsp_mode_ui_info_t s_mode_ui_info[PROCESSING_MODE_COUNT] = {
     [PROCESSING_MODE_BYPASS] = {UI_FILTER_BYPASS, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
+    // TODO(TP3): la UI del OLED todavía es la del TP2 (filtros FIR) y no sabe mostrar
+    // "FFT" ni el N; mientras tanto en modo FFT muestra lo mismo que en BYPASS.
+    [PROCESSING_MODE_FFT]    = {UI_FILTER_BYPASS, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
 };
 
 /**
@@ -205,12 +208,7 @@ static void ProcessUartCommands(void) {
 
     case 'm':
     case 'M': {
-      // Avanza ciclicamente al siguiente modo de procesamiento DSP.
-      // TODO(TP3): el equipo decidio que este comando/SW3 va a recorrer Bypass y
-      // los 3 tamanos de ventana de FFT (512/1024/2048) en un solo ciclo -- eso lo
-      // implementa quien se ocupe de las issues #14/#15 (ventanas N + FFT/Bypass),
-      // no esta issue. Una vez mergeado ese cambio, actualizar el texto de ayuda de
-      // 'm' mas abajo y el comentario del handler de SW3 para reflejar los modos reales.
+      // Mismo ciclo que SW3: BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS
       pipeline_next_processing_mode();
       dsp_mode_print_flag = true;
       ui_update_flag = true;
@@ -228,7 +226,7 @@ static void ProcessUartCommands(void) {
         PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
         PRINTF("  'p': Activar/Desactivar streaming de TEXTO (excluyente con 'c')\r\n");
         PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
-        PRINTF("  'm': Alternar modo de procesamiento DSP [SW3]\r\n");
+        PRINTF("  'm': Cambiar modo: BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 [SW3]\r\n");
         PRINTF("  'c': Activar/Desactivar streaming BINARIO para la GUI (excluyente con 'p')\r\n");
         PRINTF("  's': Enviar/imprimir una unica ventana de salida\r\n");
         PRINTF("  't': Mostrar tramas binarias enviadas/descartadas\r\n");
@@ -329,20 +327,20 @@ int main(void) {
       buffer_dump_flag = false;
     }
 
-    /* 6. Aviso de sobrecarga: el filtro no llegó a procesar un bloque a tiempo y se pasó a BYPASS */
+    /* 6. Aviso de sobrecarga: se completó una ventana antes de que PendSV terminara con la
+     *    anterior, y se descartó (el modo no cambia) */
     if (pipeline_take_overrun()) {
       if (!uart_stage_any_streaming_active()) {
-        PRINTF("[DSP] Sobrecarga: el filtro no entra en tiempo real a %u Hz -> BYPASS (bloques perdidos: %u)\r\n",
+        PRINTF("[DSP] Sobrecarga a %u Hz: ventana descartada (total descartadas: %u)\r\n",
                (unsigned int)pipeline_get_sample_rate_hz(), (unsigned int)pipeline_get_overrun_count());
       }
-      dsp_mode_print_flag = true;
-      ui_update_flag = true;
     }
 
     /* 7. Notificación de modo DSP */
     if (dsp_mode_print_flag) {
       if (!uart_stage_any_streaming_active()) {
-        PRINTF("[DSP] Modo/Filtro activo: %s\r\n", pipeline_get_processing_mode_name());
+        PRINTF("[DSP] Modo: %s  N=%u\r\n", pipeline_get_processing_mode_name(),
+               (unsigned int)pipeline_get_fft_size_n());
       }
       dsp_mode_print_flag = false;
     }
@@ -388,8 +386,7 @@ void GPIO0_INT_0_IRQHANDLER(void) {
 
 /**
  * @brief Manejador de interrupción GPIO01_IRQn (Pulsador SW3).
- *        Alterna el modo de procesamiento DSP (ver TODO en el case 'm' de
- *        ProcessUartCommands para el ciclo de modos que falta implementar).
+ *        Avanza en el ciclo BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS.
  */
 void GPIO0_INT_1_IRQHANDLER(void) {
   uint32_t pin_flags1 = GPIO_GpioGetInterruptChannelFlags(GPIO0, 1U);
