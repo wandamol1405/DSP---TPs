@@ -31,7 +31,7 @@ Todo lo demás no está especificado: cómo se adquiere la ventana, qué pasa al
 - **PendSV:** procesa la ventana lista mientras la ISR llena la otra.
   - **FFT:** `arm_cfft_q15` y `arm_cmplx_mag_q15`, y después la conversión a dB.
   - **BYPASS:** copia la ventana al buffer de salida sin procesarla.
-- **UART:** manda el buffer de salida con la trama de Wanda. Todavía falta conectarlo (paso 4); hoy solo funciona el streaming de muestras del TP2 (`p`).
+- **UART:** PendSV manda el buffer de salida con la trama binaria de Wanda: con `c`, en continuo, cada ventana que encuentre la UART libre; con `s`, una sola. Como salida de texto, por ahora sigue el streaming de muestras del TP2 (`p`).
 - **DAC:** no lo pide la consigna. Se mantiene para ver en el osciloscopio la señal tal como se muestreó y para las fotos de formas de onda.
 
 ### Ping-pong de ventanas
@@ -155,6 +155,8 @@ Melisa definió cómo se adquiere y procesa cada ventana, y cómo se integra el 
 | Firmware con el protocolo mínimo de `dev-tp3-uart`; adaptar la GUI le queda a Wanda | La GUI es de Wanda; el firmware sigue el protocolo más reciente | — |
 | Se integró solo `dev-tp3-uart` a `tp3-base-adquisicion`; `dev-tp3-gui` entra después por su propio PR | La GUI todavía no es compatible con el protocolo del firmware | Merge `7f5cd63` |
 | Se sacó el campo `seq` de `frame_info_t` | No lo usa la trama mínima; si la GUI lo necesita, se vuelve a agregar | `pipeline.h` |
+| La trama binaria se manda desde PendSV, apenas se calcula la ventana: con `c` cada ventana que encuentre la UART libre, con `s` una sola | El buffer de salida se copia a la UART antes de que lo pise la ventana siguiente | `send_output_frame()`, `pipeline.c` |
+| El texto (`PRINTF`) y las tramas binarias se turnan la UART: el texto espera a que termine la trama, y mientras se imprime no arranca ninguna | Comparten LPUART4; si se escriben a la vez se mezclan los bytes y la trama llega rota | `uart_stage_try_begin_text()`, `MCXN947_Project_TP3.c` |
 
 ## Pendientes de decidir
 

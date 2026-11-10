@@ -118,6 +118,26 @@ void pipeline_step(void) {
     SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
 }
 
+// Manda s_frame_out como trama binaria: con 'c' (continuo) cada ventana, y con 's' una sola.
+// En continuo, si la UART sigue ocupada con la trama anterior, uart_stage_send_frame()
+// descarta esta y la cuenta. Con 's' el pedido se consume solo si la trama puede salir; si
+// no, queda para la próxima ventana.
+static void send_output_frame(void) {
+    if (s_out_len == 0U) {
+        return;
+    }
+
+    if (!uart_stage_is_binary_streaming_enabled()) {
+        if (!uart_stage_can_send_frame() || !uart_stage_consume_single_frame_request()) {
+            return;
+        }
+    }
+
+    uart_frame_type_t type = (s_out_info.mode == PROCESSING_MODE_FFT) ? UART_FRAME_TYPE_FFT
+                                                                       : UART_FRAME_TYPE_BYPASS;
+    uart_stage_send_frame(type, s_out_info.n, s_out_info.fs_hz, s_frame_out);
+}
+
 // Procesa la ventana que dejó lista pipeline_step (se llama desde PendSV_Handler, con
 // menor prioridad que la ISR del ADC). Mientras tanto la ISR llena la otra ventana.
 void pipeline_process_block(void) {
@@ -132,8 +152,11 @@ void pipeline_process_block(void) {
     s_out_len = processing_stage_process_frame((processing_mode_t)s_ready_info.mode, in, n, s_frame_out);
     s_out_info = s_ready_info;
 
-    // TODO(TP3, paso 4): mandar s_frame_out por UART con uart_stage_send_frame(). Mientras
-    // tanto se mantiene el streaming muestra a muestra del TP2 ('p'), con la entrada.
+    // Etapa 3: el buffer de salida por UART, en binario, si se pidió
+    send_output_frame();
+
+    // Streaming muestra a muestra del TP2 ('p'), con la entrada. TODO(TP3): reemplazarlo
+    // por la impresión en texto de s_frame_out (uart_stage_print_samples).
     for (uint32_t i = 0; i < n; i++) {
         uart_stage_feed_sample(in[i], in[i]);
     }

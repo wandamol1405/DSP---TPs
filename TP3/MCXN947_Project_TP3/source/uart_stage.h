@@ -58,11 +58,11 @@ void uart_stage_init(void);
 
 /**
  * @brief Arma y transmite (no bloqueante, por interrupcion) una trama
- *        binaria con el buffer de salida (FFT o Bypass). No hace nada si
- *        ya hay un envio en curso -- el llamador tiene que chequear
- *        uart_stage_tx_busy() antes de copiar/liberar la salida del
- *        pipeline, para no perder la ventana si la UART todavia esta
- *        ocupada con la anterior.
+ *        binaria con el buffer de salida (FFT o Bypass). Si ya hay un envio
+ *        en curso, o el loop principal esta escribiendo texto, descarta la
+ *        trama y la cuenta (ver uart_stage_can_send_frame()). El payload se
+ *        copia a un buffer propio antes de volver, asi que el llamador puede
+ *        reusar el suyo enseguida.
  * @param type    UART_FRAME_TYPE_FFT o UART_FRAME_TYPE_BYPASS.
  * @param n       Tamano de ventana (512, 1024 o 2048).
  * @param fs_hz   Frecuencia de muestreo, en Hz.
@@ -75,6 +75,27 @@ void uart_stage_send_frame(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, c
  * @brief Indica si hay una trama binaria en curso de transmision.
  */
 bool uart_stage_tx_busy(void);
+
+/**
+ * @brief Indica si una trama binaria podría salir ahora: no hay otra saliendo y el loop
+ *        principal no está escribiendo texto.
+ */
+bool uart_stage_can_send_frame(void);
+
+/**
+ * @brief Pide el turno de la UART para escribir texto (PRINTF) desde el loop principal.
+ *        Si hay una trama binaria saliendo devuelve false y no hay que escribir nada; si
+ *        devuelve true, hasta uart_stage_end_text() no arranca ninguna trama binaria
+ *        (uart_stage_send_frame() la descarta y la cuenta). Texto y trama comparten
+ *        LPUART4: si se escriben a la vez se mezclan los bytes.
+ * @note Solo desde el loop principal.
+ */
+bool uart_stage_try_begin_text(void);
+
+/**
+ * @brief Devuelve el turno tomado con uart_stage_try_begin_text().
+ */
+void uart_stage_end_text(void);
 
 /**
  * @brief Imprime por UART (bloqueante, vía PRINTF) los valores de una
