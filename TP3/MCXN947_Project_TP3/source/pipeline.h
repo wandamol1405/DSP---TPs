@@ -158,4 +158,10 @@ const char* pipeline_get_processing_mode_name(void);
  */
 uint16_t pipeline_get_num_taps(void);
 
+/**
+ * @brief EJEMPLO: imprime la última ventana de salida para el plotter (comando 'v'), si
+ *        hay una lista. Bloqueante: solo desde el loop principal, con el turno de texto.
+ */
+void pipeline_plot_task(void);
+
 #endif /* PIPELINE_H_ */

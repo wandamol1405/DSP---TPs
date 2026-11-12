@@ -28,6 +28,7 @@
 #include "uart_stage.h"       // comandos por UART: try_getchar, streaming, is_streaming_enabled
 #include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
 #include "ui.h"               // interfaz gráfica en el display OLED (independiente del hardware)
+#include "signal_gen.h"       // EJEMPLO: tono interno (DAC loopback o sintético) en lugar del generador externo
 
 /* Flags de notificación para impresión en el loop principal (se setean desde ISRs o
  * desde ProcessUartCommands, y se consumen y limpian en el while(1) de main) */
@@ -36,6 +37,7 @@ static volatile bool freq_print_flag = false;     // pide imprimir la frecuencia
 static volatile bool buffer_dump_flag = false;    // pide volcar el buffer circular por UART
 static volatile bool dsp_mode_print_flag = false; // pide imprimir el modo de procesamiento DSP actual
 static volatile bool ui_update_flag = false;      // pide sincronizar el estado del DSP hacia la UI
+static volatile bool siggen_print_flag = false;   // EJEMPLO: pide imprimir la fuente y el tono actuales
 
 /**
  * @brief Parámetros nominales de visualización asociados a cada modo del DSP.
@@ -214,6 +216,31 @@ static void ProcessUartCommands(void) {
       break;
     }
 
+    case 'g':
+    case 'G':
+      // EJEMPLO: fuente de la señal: ADC -> DAC LOOPBACK -> SINTETICA -> ADC
+      signal_gen_next_source();
+      siggen_print_flag = true;
+      break;
+
+    case 'v':
+    case 'V': {
+      // EJEMPLO: plotter por ventanas: cada ventana de salida completa, sin decimar
+      bool enable = !uart_stage_is_window_plot_enabled();
+      uart_stage_enable_window_plot(enable);
+      if (!enable) {
+        PRINTF("[UART] Plotter por ventanas: DESACTIVADO\r\n");
+      }
+      break;
+    }
+
+    case 'w':
+    case 'W':
+      // EJEMPLO: frecuencia del tono interno (250, 1000, 1004, 3000, 5000 Hz)
+      signal_gen_next_tone();
+      siggen_print_flag = true;
+      break;
+
     case 'h':
     case 'H':
     case '?':
@@ -229,6 +256,9 @@ static void ProcessUartCommands(void) {
         PRINTF("  'c': Activar/Desactivar streaming BINARIO para la GUI (excluyente con 'p')\r\n");
         PRINTF("  's': Enviar una unica ventana de salida en BINARIO\r\n");
         PRINTF("  't': Mostrar tramas binarias enviadas/descartadas\r\n");
+        PRINTF("  'g': [EJEMPLO] Fuente: ADC -> DAC LOOPBACK -> SINTETICA\r\n");
+        PRINTF("  'w': [EJEMPLO] Tono interno: 250 / 1000 / 1004 / 3000 / 5000 Hz\r\n");
+        PRINTF("  'v': [EJEMPLO] Plotter por ventanas (ventana completa, sin decimar)\r\n");
         PRINTF("  'h': Mostrar esta ayuda\r\n");
         PRINTF("=================================\r\n\r\n");
       }
@@ -291,6 +321,15 @@ static void PrintPendingStatus(void) {
     }
     dsp_mode_print_flag = false;
   }
+
+  /* EJEMPLO: fuente de la señal y tono interno */
+  if (siggen_print_flag) {
+    if (!uart_stage_any_streaming_active()) {
+      PRINTF("[SIG] Fuente: %s  Tono: %u Hz\r\n", signal_gen_get_source_name(signal_gen_get_source()),
+             (unsigned int)signal_gen_get_tone_hz());
+    }
+    siggen_print_flag = false;
+  }
 }
 
 /**
@@ -321,6 +360,7 @@ int main(void) {
 #endif
   PRINTF("  Etapas: ADC -> Ventana N -> FFT/Bypass -> UART/OLED\r\n");
   PRINTF("  Envie 'h' para ver comandos por consola\r\n");
+  PRINTF("  [EJEMPLO] Senal interna: 'g' fuente, 'w' tono\r\n");
   PRINTF("========================================\r\n\r\n");
 
   /* Inicialización del pipeline y sus etapas */
@@ -337,6 +377,7 @@ int main(void) {
 
   freq_print_flag = true;
   ui_update_flag = true;
+  siggen_print_flag = true;
 
   while (1) {
     /* 1. Todo lo que escribe texto por la UART va en este bloque. Solo corre si no está
@@ -345,6 +386,7 @@ int main(void) {
      *    avisos pendientes quedan para la próxima vuelta. */
     if (uart_stage_try_begin_text()) {
       uart_stage_task();     // streaming de texto del TP2 ('p')
+      pipeline_plot_task();  // EJEMPLO: plotter por ventanas ('v')
       ProcessUartCommands(); // los comandos pueden imprimir (ayuda, contadores)
       PrintPendingStatus();
       uart_stage_end_text();

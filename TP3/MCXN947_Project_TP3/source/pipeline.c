@@ -6,6 +6,8 @@
 
 #include "pipeline.h" // declaraciones propias y de todas las etapas que coordina
 #include "fsl_device_registers.h" // SCB y NVIC (PendSV y su prioridad)
+#include "signal_gen.h" // EJEMPLO: tono interno en lugar del generador externo
+#include <string.h>     // memcpy (EJEMPLO: copia de la salida para el plotter)
 
 // Buffer circular de entrada (muestras del ADC)
 static q15_t s_buffer_storage[PIPELINE_BUFFER_SIZE];
@@ -37,6 +39,13 @@ static int16_t s_frame_out[PIPELINE_MAX_FRAME];
 static uint32_t s_out_len = 0;                 // cantidad de valores válidos en s_frame_out
 static frame_info_t s_out_info;                // con qué Fs, N y modo se calculó s_frame_out
 
+// EJEMPLO: copia de la salida para el plotter ('v'). PendSV la llena solo si está libre
+// (s_plot_ready == false) y el loop principal la imprime y la libera, así nunca se pisa
+// mientras se imprime.
+static int16_t s_plot_buf[PIPELINE_MAX_FRAME];
+static uint32_t s_plot_len = 0;
+static volatile bool s_plot_ready = false;
+
 static volatile uint32_t s_overrun_count = 0;   // ventanas que no se procesaron a tiempo
 static volatile bool s_overrun_pending = false; // aviso para el loop principal
 
@@ -55,6 +64,7 @@ void pipeline_init(void) {
     processing_stage_init();
     dac_stage_init();
     uart_stage_init();
+    signal_gen_init();
 
     // La FFT corre en PendSV con la menor prioridad: la ISR del ADC (prioridad 0)
     // siempre puede interrumpirlo para no perder muestras.
@@ -78,9 +88,25 @@ void pipeline_step(void) {
         in_sample = circular_buffer_get_playback_sample(&s_circ_buffer);
     }
 
+    // EJEMPLO: fuente de la señal (ver signal_gen.h). El tono se calcula en todas las
+    // fuentes salvo ADC, así la fase sigue corriendo y no salta al cambiar de fuente.
+    signal_source_t source = signal_gen_get_source();
+    q15_t tone = 0;
+    if (source != SIGNAL_SOURCE_ADC) {
+        tone = signal_gen_next_sample(adc_stage_get_sample_rate_hz(adc_stage_get_sample_rate()));
+    }
+    if ((source == SIGNAL_SOURCE_SYNTH) && adc_stage_is_running()) {
+        // SINTETICA: la muestra del ADC se leyó igual (para vaciar el resultado del LPADC)
+        // pero se descarta y a la ventana entra el tono. En STOP sigue la reproducción
+        // del buffer circular, que tiene muestras del ADC.
+        in_sample = tone;
+    }
+
     // Etapa 3: el DAC repite la entrada, para seguir viendo la señal en el osciloscopio
-    // (el resultado de la FFT es un espectro, no una señal para sacar por el DAC)
-    dac_stage_write_sample(in_sample);
+    // (el resultado de la FFT es un espectro, no una señal para sacar por el DAC).
+    // EJEMPLO: con DAC LOOPBACK o SINTETICA saca el tono; en LOOPBACK es lo que el ADC
+    // vuelve a leer por el cable J1[4] -> J9[23].
+    dac_stage_write_sample((source == SIGNAL_SOURCE_ADC) ? in_sample : tone);
 
     uint32_t cur = s_cur;
     uint32_t idx = s_idx;
@@ -155,6 +181,13 @@ void pipeline_process_block(void) {
     // Etapa 3: el buffer de salida por UART, en binario, si se pidió
     send_output_frame();
 
+    // EJEMPLO: copia para el plotter, si está activo y la copia anterior ya se imprimió
+    if (uart_stage_is_window_plot_enabled() && !s_plot_ready && (s_out_len > 0U)) {
+        memcpy(s_plot_buf, s_frame_out, s_out_len * sizeof(s_frame_out[0]));
+        s_plot_len = s_out_len;
+        s_plot_ready = true;
+    }
+
     // Streaming muestra a muestra del TP2 ('p'), con la entrada. TODO(TP3): reemplazarlo
     // por la impresión en texto de s_frame_out (uart_stage_print_samples).
     for (uint32_t i = 0; i < n; i++) {
@@ -162,6 +195,18 @@ void pipeline_process_block(void) {
     }
 
     s_frame_busy = false;
+}
+
+// EJEMPLO: imprime la última ventana copiada para el plotter ('v'), si hay una. Llamar
+// desde el loop principal con el turno de texto de la UART tomado.
+void pipeline_plot_task(void) {
+    if (!s_plot_ready) {
+        return;
+    }
+    if (uart_stage_is_window_plot_enabled()) {
+        uart_stage_plot_window(s_plot_buf, s_plot_len);
+    }
+    s_plot_ready = false;
 }
 
 // Tamaño de ventana seleccionado, en muestras (puede no haberse aplicado todavía a la

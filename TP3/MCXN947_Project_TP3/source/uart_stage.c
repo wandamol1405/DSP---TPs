@@ -12,6 +12,7 @@
 
 static bool s_streaming_enabled = false;      // true si el modo streaming de texto ('p') está activo
 static bool s_binary_streaming_enabled = false; // true si el modo streaming binario ('c') está activo
+static bool s_window_plot_enabled = false;      // EJEMPLO: ventana completa en texto para el plotter ('v')
 static bool s_single_frame_requested = false;   // pedido de una unica ventana ('s'), se consume solo
 static uint32_t s_frames_sent = 0;              // tramas binarias enviadas con exito desde el boot
 static uint32_t s_frames_dropped = 0;           // tramas binarias descartadas (UART ocupada) desde el boot
@@ -134,6 +135,7 @@ void uart_stage_enable_binary_streaming(bool enable) {
     s_binary_streaming_enabled = enable;
     if (enable) {
         s_streaming_enabled = false;
+        s_window_plot_enabled = false;
     }
 }
 
@@ -142,7 +144,34 @@ bool uart_stage_is_binary_streaming_enabled(void) {
 }
 
 bool uart_stage_any_streaming_active(void) {
-    return s_streaming_enabled || s_binary_streaming_enabled;
+    return s_streaming_enabled || s_binary_streaming_enabled || s_window_plot_enabled;
+}
+
+// EJEMPLO: modo plotter por ventanas ('v'). Excluyente con 'p' y 'c', igual que esos dos
+// entre sí.
+void uart_stage_enable_window_plot(bool enable) {
+    s_window_plot_enabled = enable;
+    if (enable) {
+        s_streaming_enabled = false;
+        s_binary_streaming_enabled = false;
+    }
+}
+
+bool uart_stage_is_window_plot_enabled(void) {
+    return s_window_plot_enabled;
+}
+
+// EJEMPLO: imprime los len valores de una ventana, uno por línea, en el formato elegido
+// con 'o'. Bloqueante: llamar solo desde el loop principal.
+void uart_stage_plot_window(const int16_t *data, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        if (s_stream_mode == UART_STREAM_MODE_OSCILLOSCOPE) {
+            PRINTF("%d,0,0\r\n", (int)data[i]);
+        } else {
+            // Mismo formato entrada,salida que 'p', para que lo lea la GUI del TP1
+            PRINTF("%d,%d\r\n", (int)data[i], (int)data[i]);
+        }
+    }
 }
 
 void uart_stage_request_single_frame(void) {
@@ -241,6 +270,7 @@ void uart_stage_enable_streaming(bool enable) {
     s_streaming_enabled = enable;
     if (enable) {
         s_binary_streaming_enabled = false;
+        s_window_plot_enabled = false;
     }
 }
 
@@ -338,7 +368,17 @@ bool uart_stage_try_getchar(char *ch) {
         return false;
     }
     LPUART_Type *base = (LPUART_Type *)BOARD_DEBUG_UART_BASEADDR;
-    if ((LPUART_GetStatusFlags(base) & (uint32_t)kLPUART_RxDataRegFullFlag) != 0U) {
+    uint32_t flags = LPUART_GetStatusFlags(base);
+
+    // EJEMPLO: si llegaron más bytes de los que entran en la FIFO de RX mientras el loop
+    // principal estaba ocupado imprimiendo, el LPUART marca overrun y, mientras ese flag
+    // siga puesto, no guarda ningún byte nuevo: la placa queda "sorda" a los comandos.
+    // Leyendo por polling nadie lo limpiaba, así que se limpia acá.
+    if ((flags & (uint32_t)kLPUART_RxOverrunFlag) != 0U) {
+        (void)LPUART_ClearStatusFlags(base, (uint32_t)kLPUART_RxOverrunFlag);
+    }
+
+    if ((flags & (uint32_t)kLPUART_RxDataRegFullFlag) != 0U) {
         *ch = (char)LPUART_ReadByte(base);
         return true;
     }

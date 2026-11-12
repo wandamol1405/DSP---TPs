@@ -141,6 +141,20 @@ bool uart_stage_is_binary_streaming_enabled(void);
 bool uart_stage_any_streaming_active(void);
 
 /**
+ * @brief EJEMPLO: activa o desactiva el modo plotter por ventanas ('v'): cada ventana de
+ *        salida completa (FFT o BYPASS), sin decimar, un valor por línea. Excluyente con
+ *        'p' y 'c'.
+ */
+void uart_stage_enable_window_plot(bool enable);
+bool uart_stage_is_window_plot_enabled(void);
+
+/**
+ * @brief EJEMPLO: imprime len valores, uno por línea, en el formato elegido con 'o'
+ *        ("valor,valor" o "valor,0,0"). Bloqueante: solo desde el loop principal.
+ */
+void uart_stage_plot_window(const int16_t *data, uint32_t len);
+
+/**
  * @brief Pide el envío/impresión de una única ventana de salida (comando
  *        's'), sin activar el modo continuo.
  */
