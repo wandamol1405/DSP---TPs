@@ -70,7 +70,7 @@ En el código (`pipeline.c`): `s_frame_in[2][2048]` son A y B, `s_cur` indica en
 | Adquisición | RUN |
 | Fs | 8 kHz (LED rojo) |
 | Modo | BYPASS |
-| N | 1024 (pasa a 512 con la issue #26) |
+| N | 512 |
 
 ### SW3: modo y tamaño de ventana
 
@@ -84,14 +84,12 @@ Cada vez que se presiona SW3, o se manda `m` por UART, se avanza un paso del cic
 
 | Pulsación | Modo | N | Qué sale por UART |
 | --- | --- | --- | --- |
-| (al encender) | BYPASS | 1024 | 1024 muestras q15 |
+| (al encender) | BYPASS | 512 | 512 muestras q15 |
 | 1.ª | FFT | 512 | 256 bins en dB × 100 |
 | 2.ª | FFT | 1024 | 512 bins |
 | 3.ª | FFT | 2048 | 1024 bins |
-| 4.ª | BYPASS | 2048 | 2048 muestras q15 |
+| 4.ª | BYPASS | 512 | 512 muestras q15 |
 | 5.ª | FFT | 512 | 256 bins (y sigue el ciclo) |
-
-Hoy BYPASS mantiene el N anterior: 1024 al encender y 2048 cuando se vuelve desde FFT 2048. Está decidido que BYPASS use siempre N = 512 (issue #26); cuando se implemente, las filas de BYPASS de esta tabla quedan con 512.
 
 El cambio no es inmediato: la ventana que se está llenando termina con el modo y el N con que empezó, y lo nuevo se aplica desde la ventana siguiente.
 
@@ -205,7 +203,7 @@ A 115200 baudios se descartan varias ventanas por cada una que se envía. Se dec
 | Decisión | Por qué | Dónde | Estado |
 | --- | --- | --- | --- |
 | SW3 y el comando `m` recorren BYPASS → FFT 512 → FFT 1024 → FFT 2048 | Una sola tecla cubre el bypass y los tres tamaños | `pipeline_next_processing_mode()` | Implementado |
-| BYPASS usa siempre N = 512 | Es el tamaño del buffer del Laboratorio #1, y el N de BYPASS no tiene que depender de qué FFT se usó antes | `pipeline.c` | Pendiente (#26) |
+| BYPASS usa siempre N = 512 | Es el tamaño del buffer del Laboratorio #1, y el N de BYPASS no tiene que depender de qué FFT se usó antes | `pipeline.c` | Implementado |
 | La FFT usa `arm_cfft_q15` de CMSIS-DSP con las instancias de 512, 1024 y 2048, y después `arm_cmplx_mag_q15` | Funciones de la biblioteca recomendada; el resultado va a un buffer de salida propio | `processing_stage.c` | Implementado |
 | Se mandan los bins 0 a N/2 − 1 en dBFS × 100 | 0 dB es un tono de amplitud máxima para cualquier N, y un bin en 0 vale −100 dB. Entero de 16 bits con dos decimales, sin floats en la trama | `processing_stage.c` | Implementado |
 | Sin ventana Hann ni remoción de la media en el firmware: solo ventana rectangular | La consigna no las pide. El efecto de la ventana se muestra en un cuaderno de Jupyter con señales simuladas | — | Cuaderno pendiente (#28) |

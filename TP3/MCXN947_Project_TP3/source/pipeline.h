@@ -131,7 +131,7 @@ circular_buffer_t* pipeline_get_circular_buffer(void);
 
 /**
  * @brief Avanza al siguiente modo del ciclo BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS
- *        (SW3 y comando 'm'). En BYPASS se mantiene el último N. El cambio es diferido: se
+ *        (SW3 y comando 'm'). En BYPASS usa siempre N = 512. El cambio es diferido: se
  *        aplica recién cuando arranca la próxima ventana.
  * @return El nuevo modo de procesamiento (el N se consulta con pipeline_get_fft_size_n()).
  */
