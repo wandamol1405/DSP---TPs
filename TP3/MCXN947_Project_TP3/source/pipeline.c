@@ -2,6 +2,15 @@
  * pipeline.c
  *
  * Implementación del coordinador del pipeline de procesamiento de señal.
+ *
+ * TODO(TP3, issues #14/#15): este archivo sigue con el ping-pong de
+ * PROCESSING_BLOCK_SIZE=32 heredado de TP2 -- no hay ventana de N muestras
+ * (512/1024/2048) todavía. El patrón ping-pong + PendSV de pipeline_step()/
+ * pipeline_process_block() es el que corresponde reusar/extender para la
+ * ventana N (mismo problema: la ISR del ADC no puede bloquearse, el cómputo
+ * pesado va en PendSV), pero los buffers están dimensionados para 32, no
+ * para hasta 2048 -- van a necesitar redimensionarse o reestructurarse.
+ * Ver el TODO puntual en pipeline_process_block() para el enganche con UART.
  */
 
 #include "pipeline.h" // declaraciones propias y de todas las etapas que coordina
@@ -108,9 +117,27 @@ void pipeline_process_block(void) {
         // Guardamos la muestra procesada en el buffer de salida diferenciado
         circular_buffer_push(&s_out_circ_buffer, out[i]);
 
-        // Salida UART (para PC / Serial Plotter)
+        // Salida UART (para PC / Serial Plotter) -- camino viejo de TP2, muestra a
+        // muestra. Se mantiene mientras 'p' lo siga necesitando (ver TODO en
+        // uart_stage.h); se puede sacar una vez que 'p' pase a usar uart_stage_print_samples().
         uart_stage_feed_sample(in[i], out[i]);
     }
+
+    // TODO(TP3, issues #14/#15): este es el lugar análogo donde, una vez que exista
+    // una ventana de N muestras de salida (FFT o Bypass) en vez de este bloque de 32,
+    // hay que enganchar el envío binario armado en la issue #16:
+    //
+    //   if (uart_stage_is_binary_streaming_enabled() || uart_stage_consume_single_frame_request()) {
+    //       uart_frame_type_t type = /* mapear el modo FFT_512/1024/2048 -> FFT, BYPASS -> BYPASS */;
+    //       uart_stage_send_frame(type, n, fs_hz, payload);
+    //   }
+    //
+    // Importante: llamar a uart_stage_consume_single_frame_request() SOLO en este punto
+    // (cuando la ventana ya está lista para mandarse) -- se consume al leerla, así que
+    // llamarla antes de tiempo "gasta" un pedido de 's' sin haber mandado nada.
+    // Mismo lugar para reenganchar 'p' a uart_stage_print_samples() en vez del
+    // uart_stage_feed_sample() de arriba (decidir ahí mismo cuánto decimar: imprimir
+    // cada ventana a la tasa real satura bastante más que el período de la ventana).
 
     s_blk_busy = false;
 }

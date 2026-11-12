@@ -46,7 +46,7 @@ El desarrollo se organiza según los issues de GitHub:
    - Medición de ciclos de CPU mediante DWT (`CYCCNT`).
 
 3. **[Issue #16](https://github.com/wandamol1405/DSP---TPs/issues/16) - Transmisión del resultado por UART**:
-   - Transmisión no bloqueante de tramas binarias (`0xA5 0x5A`) con CRC-16/CCITT.
+   - Transmisión de tramas binarias (`0xA5 0x5A`) con el buffer de salida (FFT o Bypass).
    - Envío desacoplado de la última salida disponible para no saturar el canal serie.
 
 4. **[Issue #17](https://github.com/wandamol1405/DSP---TPs/issues/17) - GUI en PC para graficar el espectro y ensayos**:
@@ -57,15 +57,17 @@ El desarrollo se organiza según los issues de GitHub:
 
 ## Formato de Trama UART (Binario Little-Endian)
 
+Protocolo mínimo: lo que pide la consigna es transmitir el buffer de salida
+(FFT o Bypass) y graficarlo en la PC. No se agregó CRC, número de secuencia
+ni bin de pico transmitido (la GUI lo calcula del lado de la PC) — son
+robustez/telemetría extra que la consigna no pide; si hace falta más
+adelante, se agregan sin romper lo que ya hay (quedan como campos nuevos al
+final de la trama).
+
 | Campo | Tipo | Tamaño | Descripción |
 | :--- | :--- | :--- | :--- |
 | **Sync** | uint16 | 2 B | `0xA5 0x5A` |
 | **Type** | uint8 | 1 B | `0` = FFT (dB × 100), `1` = Bypass ($q_{15}$) |
-| **Window** | uint8 | 1 B | `0` = Rectangular, `1` = Hann |
 | **N** | uint16 | 2 B | Tamaño de ventana ($512, 1024, 2048$) |
-| **Length** | uint16 | 2 B | Cantidad de puntos en el payload ($N/2$ para FFT, $N$ para Bypass) |
 | **Fs (Hz)** | uint32 | 4 B | Frecuencia de muestreo |
-| **Seq** | uint32 | 4 B | Número secuencial de ventana |
-| **Peak Bin** | uint16 | 2 B | Bin del armónico fundamental (0 en Bypass) |
-| **Payload** | int16[Length] | $2 \times \text{Length}$ B | Datos de salida |
-| **CRC** | uint16 | 2 B | CRC-16/CCITT sobre todos los campos previos (excluyendo Sync) |
+| **Payload** | int16[Length] | $2 \times \text{Length}$ B | Datos de salida. Length = N/2 (FFT) o N (Bypass) — no se transmite, se deriva de Type y N |
