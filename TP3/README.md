@@ -93,7 +93,7 @@ Ejecución:
 venv/bin/python3 fft_gui.py
 ```
 
-Por ahora la interfaz funciona con el simulador y no con la placa: espera una trama con más campos que la que envía el firmware. La adaptación está en la issue #24.
+La interfaz decodifica la trama mínima del firmware y envía los comandos soportados por la placa (`m`, `f`, `r`, `c`, `s`, `t`, `h`).
 
 Para probarla con el simulador, en otra terminal:
 
