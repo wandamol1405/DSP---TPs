@@ -42,37 +42,17 @@ static volatile bool overrun_print_flag = false;  // pide avisar que se descart�
 static volatile bool ui_update_flag = false;      // pide sincronizar el estado del DSP hacia la UI
 
 /**
- * @brief Parámetros nominales de visualización asociados a cada modo del DSP.
- *        Sin los filtros FIR del TP2, solo queda BYPASS (sin Fc ni BW).
- */
-typedef struct {
-  ui_filter_t ui_type;
-  uint32_t fc_hz;
-  uint32_t bw_hz;
-} dsp_mode_ui_info_t;
-
-static const dsp_mode_ui_info_t s_mode_ui_info[PROCESSING_MODE_COUNT] = {
-    [PROCESSING_MODE_BYPASS] = {UI_FILTER_BYPASS, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
-    // TODO(TP3): la UI del OLED todavía es la del TP2 (filtros FIR) y no sabe mostrar
-    // "FFT" ni el N; mientras tanto en modo FFT muestra lo mismo que en BYPASS.
-    [PROCESSING_MODE_FFT]    = {UI_FILTER_BYPASS, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE},
-};
-
-/**
- * @brief Publica en la UI el estado actual del pipeline DSP (Fs, filtro, Fc, BW y taps).
+ * @brief Publica en la UI el estado actual del pipeline DSP (modo, N, Fs y pico).
  *        La UI decide internamente qué regiones del display cambiaron realmente.
  */
 static void UpdateUiFromDsp(void) {
   processing_mode_t mode = pipeline_get_processing_mode();
-  if ((unsigned int)mode >= (unsigned int)PROCESSING_MODE_COUNT) {
-    mode = PROCESSING_MODE_BYPASS;
-  }
+  ui_mode_t ui_mode = (mode == PROCESSING_MODE_FFT) ? UI_MODE_FFT : UI_MODE_BYPASS;
 
+  ui_set_mode(ui_mode);
+  ui_set_window_size((uint16_t)pipeline_get_fft_size_n());
   ui_set_sampling_frequency(pipeline_get_sample_rate_hz());
-  ui_set_filter_type(s_mode_ui_info[mode].ui_type);
-  ui_set_cutoff_frequency(s_mode_ui_info[mode].fc_hz);
-  ui_set_bandwidth(s_mode_ui_info[mode].bw_hz);
-  ui_set_filter_taps(pipeline_get_num_taps());
+  ui_set_peak_frequency(pipeline_get_peak_frequency_hz());
 }
 
 /**
@@ -325,6 +305,9 @@ int main(void) {
     }
 
     /* 3. Actualización de la interfaz gráfica (OLED): solo fuera de ISR */
+    if (pipeline_take_peak_updated()) {
+      ui_set_peak_frequency(pipeline_get_peak_frequency_hz());
+    }
     if (ui_update_flag) {
       ui_update_flag = false;
       UpdateUiFromDsp();

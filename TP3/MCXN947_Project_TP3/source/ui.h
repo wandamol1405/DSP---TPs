@@ -1,8 +1,9 @@
 /*
  * ui.h
  *
- * Interfaz gráfica del DSP: muestra tipo de filtro, gráfico de respuesta,
- * cantidad de taps, Fs, Fc y BW en el OLED.
+ * Interfaz gráfica del DSP (TP3 - FFT): muestra en el OLED el modo activo (BYPASS o FFT),
+ * el tamaño de ventana (N), la frecuencia de muestreo (Fs), la resolución en frecuencia
+ * (df = Fs / N) y la frecuencia del pico del espectro.
  *
  * API independiente del hardware de visualización: no expone U8g2, el controlador,
  * el bus ni coordenadas. La aplicación solo informa QUÉ cambió; este módulo decide
@@ -23,16 +24,13 @@
 #include <stdbool.h>
 
 /**
- * @brief Tipos de filtro que la UI sabe representar (nombre + gráfico de respuesta).
+ * @brief Modos de operación que la UI sabe representar.
  */
 typedef enum {
-    UI_FILTER_BYPASS = 0, /**< Sin filtrado */
-    UI_FILTER_LOWPASS,    /**< Pasa bajos */
-    UI_FILTER_HIGHPASS,   /**< Pasa altos */
-    UI_FILTER_BANDPASS,   /**< Pasa banda */
-    UI_FILTER_BANDSTOP,   /**< Elimina banda */
-    UI_FILTER_COUNT       /**< Cantidad de tipos (no es un tipo válido) */
-} ui_filter_t;
+    UI_MODE_BYPASS = 0, /**< Copia directa de la ventana */
+    UI_MODE_FFT,        /**< Espectro de magnitud por FFT */
+    UI_MODE_COUNT       /**< Cantidad de modos (no es un modo válido) */
+} ui_mode_t;
 
 /**
  * @brief Valor de frecuencia que indica "no aplica / desconocido" (se muestra como "--").
@@ -40,13 +38,13 @@ typedef enum {
 #define UI_FREQUENCY_NONE 0xFFFFFFFFu
 
 /**
- * @brief Valor de taps que indica "no aplica / sin filtro" (se muestra como "--").
+ * @brief Valor de tamaño de ventana que indica "desconocido" (se muestra como "--").
  */
-#define UI_TAPS_NONE 0u
+#define UI_WINDOW_SIZE_NONE 0u
 
 /**
  * @brief Inicializa el módulo y el display, y dibuja la pantalla completa con el estado por defecto
- *        (BYPASS, todas las frecuencias y taps en "--").
+ *        (BYPASS, N y todas las frecuencias en "--").
  * @return true si el display respondió. Si devuelve false la UI queda deshabilitada y el resto de
  *         las funciones pasan a ser inofensivas (no intentan comunicar con el display).
  * @note Bloqueante. Solo contexto principal.
@@ -60,34 +58,28 @@ bool ui_init(void);
 void ui_show_screen(void);
 
 /**
- * @brief Actualiza la frecuencia de muestreo mostrada.
+ * @brief Actualiza el modo mostrado en el encabezado (BYPASS o FFT).
+ * @param mode Modo activo. Valores fuera de rango se ignoran.
+ */
+void ui_set_mode(ui_mode_t mode);
+
+/**
+ * @brief Actualiza el tamaño de la ventana N mostrado (512, 1024, 2048) y recalcula df.
+ * @param n Cantidad de muestras de la ventana, o UI_WINDOW_SIZE_NONE (0).
+ */
+void ui_set_window_size(uint16_t n);
+
+/**
+ * @brief Actualiza la frecuencia de muestreo mostrada y recalcula df.
  * @param hz Frecuencia en Hz, o UI_FREQUENCY_NONE.
  */
 void ui_set_sampling_frequency(uint32_t hz);
 
 /**
- * @brief Actualiza el tipo de filtro (nombre en el encabezado y gráfico asociado).
- * @param type Tipo de filtro. Valores fuera de rango se ignoran.
+ * @brief Actualiza la frecuencia del pico de la FFT mostrada.
+ * @param hz Frecuencia del pico en Hz, o UI_FREQUENCY_NONE si no aplica (en BYPASS).
  */
-void ui_set_filter_type(ui_filter_t type);
-
-/**
- * @brief Actualiza la frecuencia de corte mostrada.
- * @param hz Frecuencia en Hz, o UI_FREQUENCY_NONE si no aplica (p. ej. BYPASS).
- */
-void ui_set_cutoff_frequency(uint32_t hz);
-
-/**
- * @brief Actualiza el ancho de banda mostrado.
- * @param hz Ancho de banda en Hz, o UI_FREQUENCY_NONE si no aplica (p. ej. pasa bajos/altos).
- */
-void ui_set_bandwidth(uint32_t hz);
-
-/**
- * @brief Actualiza la cantidad de coeficientes (taps) del filtro activo.
- * @param taps Cantidad de taps, o UI_TAPS_NONE (0) si no aplica (p. ej. BYPASS).
- */
-void ui_set_filter_taps(uint16_t taps);
+void ui_set_peak_frequency(uint32_t hz);
 
 /**
  * @brief Aplica al display los cambios pendientes, transmitiendo solo las regiones afectadas.
@@ -97,4 +89,3 @@ void ui_set_filter_taps(uint16_t taps);
 void ui_process(void);
 
 #endif /* UI_H_ */
-

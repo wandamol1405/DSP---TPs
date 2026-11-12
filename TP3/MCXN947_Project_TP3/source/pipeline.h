@@ -147,9 +147,21 @@ processing_mode_t pipeline_get_processing_mode(void);
  */
 const char* pipeline_get_processing_mode_name(void);
 
+// Valor de frecuencia de pico que indica que no aplica (en BYPASS o antes de la primera FFT).
+#define PIPELINE_PEAK_NONE 0xFFFFFFFFU
+
 /**
- * @brief Obtiene la cantidad de coeficientes (taps) del filtro actual (0 en BYPASS).
+ * @brief Obtiene la frecuencia del bin de mayor magnitud (sin contar continua) de la
+ *        última ventana FFT, en Hz (redondeada como k * Fs / N), o PIPELINE_PEAK_NONE
+ *        si el modo actual es BYPASS o todavía no se completó una ventana con la
+ *        configuración actual.
  */
-uint16_t pipeline_get_num_taps(void);
+uint32_t pipeline_get_peak_frequency_hz(void);
+
+/**
+ * @brief Consulta si se completó una ventana y cambió o se actualizó el pico desde la
+ *        última consulta, y limpia la bandera.
+ */
+bool pipeline_take_peak_updated(void);
 
 #endif /* PIPELINE_H_ */

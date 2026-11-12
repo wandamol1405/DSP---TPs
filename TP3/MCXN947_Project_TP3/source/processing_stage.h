@@ -54,10 +54,11 @@ processing_mode_t processing_stage_get_mode(void);
 const char* processing_stage_get_mode_name(processing_mode_t mode);
 
 /**
- * @brief Cantidad de coeficientes (taps) del filtro activo. Sin filtros FIR, siempre 0.
- *        Solo queda porque la UI del OLED (del TP2) lo sigue mostrando.
+ * @brief Obtiene el índice del bin (1 .. N/2 - 1) de mayor magnitud de la última
+ *        ventana procesada en modo FFT (sin contar el bin 0 de continua), o 0 si la
+ *        última ventana fue BYPASS.
  */
-uint16_t processing_stage_get_num_taps(void);
+uint16_t processing_stage_get_peak_bin(void);
 
 /**
  * @brief Procesa una ventana de N muestras y escribe el resultado en un buffer distinto
