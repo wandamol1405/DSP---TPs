@@ -66,18 +66,15 @@ Los mismos cambios y el resto de las funciones se manejan con comandos de una le
 
 | Comando | Función |
 | --- | --- |
-| `r` | Alterna RUN y STOP de la adquisición |
-| `f` | Pasa a la frecuencia de muestreo siguiente (igual que SW2) |
 | `m` | Pasa al modo siguiente (igual que SW3) |
-| `c` | Activa o desactiva el envío continuo de tramas binarias |
-| `s` | Envía una sola trama binaria |
-| `t` | Muestra cuántas tramas se enviaron y cuántas se descartaron |
-| `d` | Vuelca el buffer circular de entrada en texto |
-| `p` | Activa o desactiva el envío de muestras en texto |
-| `o` | Cambia el formato del envío en texto |
+| `f` | Pasa a la frecuencia de muestreo siguiente (igual que SW2) |
+| `r` | Alterna RUN y STOP de la adquisición |
+| `c` | Activa o desactiva el envío continuo de tramas |
+| `s` | Envía una sola trama |
+| `t` | Muestra el estado y los contadores: tramas enviadas y descartadas, comandos perdidos y ventanas descartadas |
 | `h` | Muestra la ayuda |
 
-Los comandos `d`, `p` y `o` vienen del TP1 y del TP2 y se van a quitar (issue #23).
+La placa atiende los comandos en todo momento, también con el envío continuo activo. Las respuestas son líneas de texto que salen entre dos tramas.
 
 ## Interfaz gráfica
 

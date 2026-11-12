@@ -153,20 +153,6 @@ Para no confundir datos con un comienzo de trama, la interfaz comprueba que el t
 
 ## Comunicación por UART
 
-### Cómo está hoy
-
-- Las tramas binarias salen desde PendSV, sin bloquear, apenas se calcula la ventana.
-- El texto (respuestas a comandos y avisos) sale desde el loop principal con `PRINTF`.
-- Texto y tramas comparten LPUART4 y se turnan: el texto espera a que termine la trama, y mientras se imprime texto no arranca ninguna trama.
-- Los comandos se leen consultando la UART, y solo cuando el loop principal consigue el turno de texto.
-- Además de las tramas quedan tres salidas de texto heredadas del TP1 y del TP2: el envío muestra a muestra (`p`), su cambio de formato (`o`) y el volcado del buffer circular (`d`).
-
-### Problema
-
-Con el envío continuo activo, la UART está casi siempre transmitiendo: a 115200 baudios una trama de FFT de 2048 puntos tarda cerca de 180 ms. Mientras tanto el loop principal no consigue el turno y no lee los comandos. Los bytes recibidos se acumulan hasta desbordar, la UART marca el error de desborde y, mientras esa marca siga puesta, no guarda ningún byte nuevo: la placa deja de responder.
-
-### Cómo queda (issue #23)
-
 ```
  loop principal: respuestas de texto ───────────────────────────► LPUART4 TX ──► PC
         ▲            (solo entre dos tramas)                          ▲
@@ -176,10 +162,17 @@ Con el envío continuo activo, la UART está casi siempre transmitiendo: a 11520
  comandos ◄── buffer circular de recepción ◄── LPUART4 RX (interrupción) ◄── PC
 ```
 
-- **Recepción por interrupción:** cada byte recibido se guarda en un buffer circular, aunque esté saliendo una trama. El loop principal procesa los comandos en cada vuelta.
-- **Una sola salida de datos:** las tramas binarias, en continuo (`c`) o de a una (`s`). El texto queda solo para las respuestas a comandos y los avisos.
-- **Texto entre tramas:** las respuestas salen entre dos tramas, también con el envío continuo activo. La interfaz gráfica separa el texto de las tramas en el mismo flujo de bytes.
-- **Comandos que quedan:** `m`, `f`, `r`, `c`, `s`, `t` y `h`.
+- **Una sola salida de datos:** las tramas binarias, en continuo (`c`) o de a una (`s`). Salen desde PendSV, sin bloquear, apenas se calcula la ventana.
+- **Texto:** queda solo para las respuestas a los comandos y los avisos. Sale desde el loop principal con `PRINTF`.
+- **Turno entre texto y tramas:** comparten LPUART4, así que el texto sale solo entre dos tramas. Cuando hay texto pendiente y una trama saliendo, el turno queda pedido: no arranca otra trama, y el texto sale apenas termina la actual. Así el texto espera como mucho una trama, también con el envío continuo activo. Las ventanas que se completan mientras se imprime se descartan y se cuentan.
+- **Recepción por interrupción:** cada byte recibido se guarda en un buffer circular de 64 bytes, aunque esté saliendo una trama. El loop principal atiende los comandos en cada vuelta: aplica el cambio en el momento y deja la respuesta pendiente para cuando consiga el turno.
+- **Comandos:** `m`, `f`, `r`, `c`, `s`, `t` y `h`. El comando `t` muestra, entre otros contadores, cuántos bytes de comandos se perdieron; tiene que quedar en 0.
+
+### Cómo era antes y por qué se cambió
+
+Los comandos se leían consultando la UART, y solo cuando el loop principal conseguía el turno de texto. Con el envío continuo activo, la UART está casi siempre transmitiendo: a 115200 baudios una trama de FFT de 2048 puntos tarda cerca de 180 ms. Mientras tanto no se leían los comandos. Los bytes recibidos se acumulaban hasta desbordar, la UART marcaba el error de desborde y, mientras esa marca seguía puesta, no guardaba ningún byte nuevo: la placa dejaba de responder.
+
+Además de las tramas había tres salidas de texto heredadas del TP1 y del TP2: el envío muestra a muestra (`p`), su cambio de formato (`o`) y el volcado del buffer circular (`d`). Se quitaron: con la trama binaria y la interfaz gráfica no hacen falta. Con ellas activas tampoco se imprimían las respuestas a los comandos.
 
 ### Velocidad del puerto
 
@@ -232,10 +225,10 @@ Para medirlo se usa un contador que trae el procesador y que suma uno por cada c
 | Envío de la trama sin bloquear, por interrupción | No frenar el procesamiento esperando a la UART | `uart_stage_send_frame()` | Implementado |
 | Si la UART sigue ocupada con la trama anterior, la nueva se descarta y se cuenta | Ídem; el comando `t` muestra los contadores | `uart_stage_send_frame()` | Implementado |
 | La trama se manda desde PendSV, apenas se calcula la ventana | El buffer de salida se copia a la UART antes de que lo pise la ventana siguiente | `send_output_frame()`, `pipeline.c` | Implementado |
-| El texto y las tramas se turnan la UART | Comparten LPUART4; si se escriben a la vez se mezclan los bytes y la trama llega rota | `uart_stage_try_begin_text()` | Implementado |
-| Los comandos se reciben por interrupción y se procesan siempre | Que la placa responda aunque esté enviando tramas | `uart_stage.c` | Pendiente (#23) |
-| Una sola salida de datos: se quitan `p`, `o` y `d` | Eran salidas del TP1 y del TP2 para otros programas de PC; con la trama binaria y la interfaz gráfica no hacen falta | `uart_stage.c`, `MCXN947_Project_TP3.c` | Pendiente (#23) |
-| Las respuestas de texto salen entre tramas, también con el envío continuo | Poder consultar el estado sin cortar el envío | `MCXN947_Project_TP3.c` | Pendiente (#23) |
+| El texto y las tramas se turnan la UART, y el texto pendiente tiene prioridad sobre la trama siguiente | Comparten LPUART4; si se escriben a la vez se mezclan los bytes y la trama llega rota. Con la prioridad, el texto espera como mucho una trama | `uart_stage_try_begin_text()` | Implementado |
+| Los comandos se reciben por interrupción y se procesan siempre | Que la placa responda aunque esté enviando tramas | `uart_stage.c` | Implementado |
+| Una sola salida de datos: se quitan `p`, `o` y `d` | Eran salidas del TP1 y del TP2 para otros programas de PC; con la trama binaria y la interfaz gráfica no hacen falta | `uart_stage.c`, `MCXN947_Project_TP3.c` | Implementado |
+| Las respuestas de texto salen entre tramas, también con el envío continuo | Poder consultar el estado sin cortar el envío | `MCXN947_Project_TP3.c` | Implementado |
 | Se sube la velocidad del puerto serie | A 115200 baudios se descartan muchas ventanas | Configuración desde MCUXpresso | Pendiente (#25) |
 
 ### Programas de PC
