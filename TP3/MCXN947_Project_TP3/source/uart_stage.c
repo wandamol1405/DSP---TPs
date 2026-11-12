@@ -43,6 +43,9 @@ static volatile q15_t s_stream_out = 0;       // última muestra de salida reten
 
 static lpuart_handle_t s_tx_handle;
 static volatile bool s_tx_busy = false;
+// true mientras el loop principal escribe texto (PRINTF bloqueante) por la misma UART: en
+// ese lapso no se arranca ninguna trama binaria, para que no se mezclen los bytes.
+static volatile bool s_text_busy = false;
 static uint8_t s_tx_buf[UART_FRAME_MAX_SIZE];
 
 // Se dispara por interrupcion (LP_FLEXCOMM4, ya enganchada automaticamente
@@ -105,6 +108,25 @@ bool uart_stage_tx_busy(void) {
     return s_tx_busy;
 }
 
+bool uart_stage_can_send_frame(void) {
+    return !s_tx_busy && !s_text_busy;
+}
+
+// Primero se toma el turno y después se mira si hay una trama saliendo: así, si PendSV
+// interrumpe entre las dos líneas, ya ve s_text_busy y no arranca una trama nueva.
+bool uart_stage_try_begin_text(void) {
+    s_text_busy = true;
+    if (s_tx_busy) {
+        s_text_busy = false;
+        return false;
+    }
+    return true;
+}
+
+void uart_stage_end_text(void) {
+    s_text_busy = false;
+}
+
 // Activa o desactiva el streaming binario ('c'). Mutuamente excluyente con
 // el de texto ('p'): si se prende uno, se apaga el otro aca mismo, no
 // queda en manos del que llama acordarse de hacerlo.
@@ -145,7 +167,7 @@ void uart_stage_send_frame(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, c
     if (payload == NULL || n == 0U || n > UART_FRAME_MAX_N) {
         return;  // argumentos invalidos: no cuenta como descarte real, es un error de uso
     }
-    if (s_tx_busy) {
+    if (s_tx_busy || s_text_busy) {
         s_frames_dropped++;
         return;
     }

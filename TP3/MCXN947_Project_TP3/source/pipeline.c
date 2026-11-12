@@ -2,15 +2,6 @@
  * pipeline.c
  *
  * Implementación del coordinador del pipeline de procesamiento de señal.
- *
- * TODO(TP3, issues #14/#15): este archivo sigue con el ping-pong de
- * PROCESSING_BLOCK_SIZE=32 heredado de TP2 -- no hay ventana de N muestras
- * (512/1024/2048) todavía. El patrón ping-pong + PendSV de pipeline_step()/
- * pipeline_process_block() es el que corresponde reusar/extender para la
- * ventana N (mismo problema: la ISR del ADC no puede bloquearse, el cómputo
- * pesado va en PendSV), pero los buffers están dimensionados para 32, no
- * para hasta 2048 -- van a necesitar redimensionarse o reestructurarse.
- * Ver el TODO puntual en pipeline_process_block() para el enganche con UART.
  */
 
 #include "pipeline.h" // declaraciones propias y de todas las etapas que coordina
@@ -20,45 +11,60 @@
 static q15_t s_buffer_storage[PIPELINE_BUFFER_SIZE];
 static circular_buffer_t s_circ_buffer;
 
-// Buffer circular de salida diferenciado (muestras procesadas antes del DAC)
-static q15_t s_out_buffer_storage[PIPELINE_BUFFER_SIZE];
-static circular_buffer_t s_out_circ_buffer;
+// Ventanas ping-pong: mientras la ISR del ADC llena s_frame_in[s_cur], PendSV procesa la
+// otra (s_frame_ready). Se dimensionan para el N máximo (2 x 2048 x 2 bytes = 8 KB); con
+// N menor se usa solo el principio de cada una.
+static q15_t s_frame_in[2][PIPELINE_MAX_FRAME];
+static volatile uint32_t s_cur = 0;            // ventana que llena la ISR
+static volatile uint32_t s_idx = 0;            // próxima posición a escribir en s_frame_in[s_cur]
+static volatile uint32_t s_frame_ready = 0;    // ventana que procesa PendSV
+static volatile bool s_frame_busy = false;     // true desde que se pide procesar hasta que termina
 
-// Bloques ping-pong del procesamiento: mientras la ISR del ADC llena s_blk_in[cur] y saca
-// por el DAC s_blk_out[cur], PendSV filtra el otro par (s_blk_ready). Latencia: 2 bloques.
-static q15_t s_blk_in[2][PROCESSING_BLOCK_SIZE];
-static q15_t s_blk_out[2][PROCESSING_BLOCK_SIZE];
-static volatile uint32_t s_blk_cur = 0;       // par de buffers que usa la ISR
-static volatile uint32_t s_blk_idx = 0;       // posición dentro del bloque actual
-static volatile uint32_t s_blk_ready = 0;     // par de buffers que filtra PendSV
-static volatile bool s_blk_busy = false;      // true desde que se pide filtrar hasta que termina
+// Tamaño de ventana. s_pending_n es el que eligió el usuario; s_frame_n es el de la ventana
+// que se está llenando, y solo cambia cuando la ISR arranca una ventana nueva (s_idx == 0).
+// Así una ventana nunca mezcla muestras de dos N distintos.
+static volatile fft_size_t s_pending_n = FFT_SIZE_1024;
+static uint32_t s_frame_n = 1024U;             // solo lo usa la ISR
 
-static volatile uint32_t s_overrun_count = 0;   // bloques que no se filtraron a tiempo
+// Descriptores: s_fill_info es el de la ventana que se está llenando (lo arma la ISR al
+// arrancarla) y s_ready_info el de la ventana que procesa PendSV.
+static frame_info_t s_fill_info;
+static frame_info_t s_ready_info;
+
+// Buffer de salida, distinto del de entrada (lo pide la consigna). Lo escribe PendSV con el
+// resultado de la ventana: N/2 valores en dB x 100 (FFT) o las N muestras q15 (BYPASS).
+static int16_t s_frame_out[PIPELINE_MAX_FRAME];
+static uint32_t s_out_len = 0;                 // cantidad de valores válidos en s_frame_out
+static frame_info_t s_out_info;                // con qué Fs, N y modo se calculó s_frame_out
+
+static volatile uint32_t s_overrun_count = 0;   // ventanas que no se procesaron a tiempo
 static volatile bool s_overrun_pending = false; // aviso para el loop principal
+
+// Cantidad de muestras de cada tamaño de ventana, indexada por fft_size_t
+static const uint16_t s_fft_size_n[FFT_SIZE_COUNT] = {
+    [FFT_SIZE_512]  = 512U,
+    [FFT_SIZE_1024] = 1024U,
+    [FFT_SIZE_2048] = 2048U,
+};
 
 // Inicializa el buffer circular y todas las etapas del pipeline en el orden correcto.
 void pipeline_init(void) {
     circular_buffer_init(&s_circ_buffer, s_buffer_storage, PIPELINE_BUFFER_SIZE);
-    circular_buffer_init(&s_out_circ_buffer, s_out_buffer_storage, PIPELINE_BUFFER_SIZE);
 
     adc_stage_init(&s_circ_buffer);
     processing_stage_init();
-
-    // Notificamos a la etapa de procesamiento de la frecuencia inicial
-    processing_stage_set_sample_rate(adc_stage_get_sample_rate());
-
     dac_stage_init();
     uart_stage_init();
 
-    // El filtrado corre en PendSV con la menor prioridad: la ISR del ADC (prioridad 0)
+    // La FFT corre en PendSV con la menor prioridad: la ISR del ADC (prioridad 0)
     // siempre puede interrumpirlo para no perder muestras.
     NVIC_SetPriority(PendSV_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL);
 }
 
 // Ejecuta un paso del pipeline (en la ISR del ADC, una vez por período de muestreo).
-// Solo mueve muestras: la de entrada va al bloque que se está llenando y al DAC sale la
-// muestra correspondiente del último bloque ya filtrado. Al completar un bloque se pide
-// a PendSV que lo filtre (ver pipeline_process_block).
+// Solo mueve muestras: la de entrada va a la ventana que se está llenando y se repite por
+// el DAC. Al completar N muestras se pide a PendSV que procese la ventana (ver
+// pipeline_process_block).
 void pipeline_step(void) {
     q15_t in_sample = 0;
 
@@ -72,74 +78,96 @@ void pipeline_step(void) {
         in_sample = circular_buffer_get_playback_sample(&s_circ_buffer);
     }
 
-    uint32_t cur = s_blk_cur;
-    uint32_t idx = s_blk_idx;
+    // Etapa 3: el DAC repite la entrada, para seguir viendo la señal en el osciloscopio
+    // (el resultado de la FFT es un espectro, no una señal para sacar por el DAC)
+    dac_stage_write_sample(in_sample);
 
-    // Etapa 3: Salida Analógica DAC
-    dac_stage_write_sample(s_blk_out[cur][idx]);
-    s_blk_in[cur][idx] = in_sample;
+    uint32_t cur = s_cur;
+    uint32_t idx = s_idx;
 
-    if (++idx < PROCESSING_BLOCK_SIZE) {
-        s_blk_idx = idx;
+    // Arranca una ventana nueva: recién acá se aplica el cambio de N pendiente y se anota
+    // con qué configuración se va a tomar
+    if (idx == 0U) {
+        s_frame_n = s_fft_size_n[s_pending_n];
+        s_fill_info.fs_hz = adc_stage_get_sample_rate_hz(adc_stage_get_sample_rate());
+        s_fill_info.n = (uint16_t)s_frame_n;
+        s_fill_info.mode = (uint8_t)processing_stage_get_mode();
+    }
+
+    s_frame_in[cur][idx] = in_sample;
+
+    if (++idx < s_frame_n) {
+        s_idx = idx;
         return;
     }
 
-    // Bloque completo: pasa a filtrarse y la ISR sigue con el otro par de buffers
-    s_blk_idx = 0;
-    if (s_blk_busy) {
-        // El bloque anterior todavía no terminó de filtrarse: el filtro no entra en tiempo
-        // real a esta Fs. Se pasa a bypass para que el resto del sistema (UART) siga vivo.
+    // Ventana completa
+    s_idx = 0;
+    if (s_frame_busy) {
+        // PendSV todavía no terminó con la ventana anterior: esta se descarta y se vuelve a
+        // llenar el mismo buffer. No se cambia de buffer porque el otro lo está leyendo PendSV.
         s_overrun_count++;
         s_overrun_pending = true;
-        processing_stage_set_mode(PROCESSING_MODE_BYPASS);
-    } else {
-        s_blk_ready = cur;
-        s_blk_busy = true;
-        SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
-    }
-    s_blk_cur = cur ^ 1U;
-}
-
-// Filtra el bloque que dejó listo pipeline_step (se llama desde PendSV_Handler, con
-// menor prioridad que la ISR del ADC). Mientras tanto la ISR usa el otro par de buffers.
-void pipeline_process_block(void) {
-    if (!s_blk_busy) {
         return;
     }
 
-    const q15_t *in = s_blk_in[s_blk_ready];
-    q15_t *out = s_blk_out[s_blk_ready];
+    s_frame_ready = cur;
+    s_ready_info = s_fill_info;
+    s_frame_busy = true;
+    s_cur = cur ^ 1U;
+    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+}
 
-    // Etapa 2: Procesamiento DSP
-    processing_stage_process_block(in, out, PROCESSING_BLOCK_SIZE);
-
-    for (uint32_t i = 0; i < PROCESSING_BLOCK_SIZE; i++) {
-        // Guardamos la muestra procesada en el buffer de salida diferenciado
-        circular_buffer_push(&s_out_circ_buffer, out[i]);
-
-        // Salida UART (para PC / Serial Plotter) -- camino viejo de TP2, muestra a
-        // muestra. Se mantiene mientras 'p' lo siga necesitando (ver TODO en
-        // uart_stage.h); se puede sacar una vez que 'p' pase a usar uart_stage_print_samples().
-        uart_stage_feed_sample(in[i], out[i]);
+// Manda s_frame_out como trama binaria: con 'c' (continuo) cada ventana, y con 's' una sola.
+// En continuo, si la UART sigue ocupada con la trama anterior, uart_stage_send_frame()
+// descarta esta y la cuenta. Con 's' el pedido se consume solo si la trama puede salir; si
+// no, queda para la próxima ventana.
+static void send_output_frame(void) {
+    if (s_out_len == 0U) {
+        return;
     }
 
-    // TODO(TP3, issues #14/#15): este es el lugar análogo donde, una vez que exista
-    // una ventana de N muestras de salida (FFT o Bypass) en vez de este bloque de 32,
-    // hay que enganchar el envío binario armado en la issue #16:
-    //
-    //   if (uart_stage_is_binary_streaming_enabled() || uart_stage_consume_single_frame_request()) {
-    //       uart_frame_type_t type = /* mapear el modo FFT_512/1024/2048 -> FFT, BYPASS -> BYPASS */;
-    //       uart_stage_send_frame(type, n, fs_hz, payload);
-    //   }
-    //
-    // Importante: llamar a uart_stage_consume_single_frame_request() SOLO en este punto
-    // (cuando la ventana ya está lista para mandarse) -- se consume al leerla, así que
-    // llamarla antes de tiempo "gasta" un pedido de 's' sin haber mandado nada.
-    // Mismo lugar para reenganchar 'p' a uart_stage_print_samples() en vez del
-    // uart_stage_feed_sample() de arriba (decidir ahí mismo cuánto decimar: imprimir
-    // cada ventana a la tasa real satura bastante más que el período de la ventana).
+    if (!uart_stage_is_binary_streaming_enabled()) {
+        if (!uart_stage_can_send_frame() || !uart_stage_consume_single_frame_request()) {
+            return;
+        }
+    }
 
-    s_blk_busy = false;
+    uart_frame_type_t type = (s_out_info.mode == PROCESSING_MODE_FFT) ? UART_FRAME_TYPE_FFT
+                                                                       : UART_FRAME_TYPE_BYPASS;
+    uart_stage_send_frame(type, s_out_info.n, s_out_info.fs_hz, s_frame_out);
+}
+
+// Procesa la ventana que dejó lista pipeline_step (se llama desde PendSV_Handler, con
+// menor prioridad que la ISR del ADC). Mientras tanto la ISR llena la otra ventana.
+void pipeline_process_block(void) {
+    if (!s_frame_busy) {
+        return;
+    }
+
+    const q15_t *in = s_frame_in[s_frame_ready];
+    uint32_t n = s_ready_info.n;
+
+    // Etapa 2: FFT o BYPASS, según el modo con el que se tomó la ventana (no el actual)
+    s_out_len = processing_stage_process_frame((processing_mode_t)s_ready_info.mode, in, n, s_frame_out);
+    s_out_info = s_ready_info;
+
+    // Etapa 3: el buffer de salida por UART, en binario, si se pidió
+    send_output_frame();
+
+    // Streaming muestra a muestra del TP2 ('p'), con la entrada. TODO(TP3): reemplazarlo
+    // por la impresión en texto de s_frame_out (uart_stage_print_samples).
+    for (uint32_t i = 0; i < n; i++) {
+        uart_stage_feed_sample(in[i], in[i]);
+    }
+
+    s_frame_busy = false;
+}
+
+// Tamaño de ventana seleccionado, en muestras (puede no haberse aplicado todavía a la
+// ventana que se está llenando).
+uint32_t pipeline_get_fft_size_n(void) {
+    return s_fft_size_n[s_pending_n];
 }
 
 // Indica si hubo una sobrecarga desde la última consulta (y limpia el aviso).
@@ -149,7 +177,7 @@ bool pipeline_take_overrun(void) {
     return pending;
 }
 
-// Cantidad total de bloques que no llegaron a filtrarse a tiempo.
+// Cantidad total de ventanas descartadas porque PendSV no terminó a tiempo.
 uint32_t pipeline_get_overrun_count(void) {
     return s_overrun_count;
 }
@@ -184,8 +212,10 @@ bool pipeline_is_running(void) {
 sample_rate_t pipeline_next_sample_rate(void) {
     bool is_stopped = !adc_stage_is_running();
     sample_rate_t new_rate = adc_stage_next_sample_rate(is_stopped);
-    // Sincronizar el filtro con la nueva frecuencia
-    processing_stage_set_sample_rate(new_rate);
+    // Descarta la ventana a medio llenar: la próxima arranca de cero con la Fs nueva.
+    // Va después del cambio de Fs para que ninguna muestra a la Fs nueva quede en una
+    // ventana anotada con la vieja.
+    s_idx = 0;
     return new_rate;
 }
 
@@ -204,8 +234,8 @@ uint32_t pipeline_get_sample_rate_hz(void) {
 void pipeline_set_sample_rate(sample_rate_t rate) {
     bool is_stopped = !adc_stage_is_running();
     adc_stage_apply_sample_rate(rate, is_stopped);
-    // Sincronizar el filtro con la nueva frecuencia
-    processing_stage_set_sample_rate(rate);
+    // Descarta la ventana a medio llenar (ver pipeline_next_sample_rate)
+    s_idx = 0;
 }
 
 // Expone el buffer circular interno (por ejemplo, para que otra etapa lo consulte directamente).
@@ -213,20 +243,35 @@ circular_buffer_t* pipeline_get_circular_buffer(void) {
     return &s_circ_buffer;
 }
 
-// Expone el buffer circular de salida (para análisis, etc.).
-circular_buffer_t* pipeline_get_output_circular_buffer(void) {
-    return &s_out_circ_buffer;
-}
-
 // Solicita a la etapa UART que envíe el contenido completo del buffer circular por el puerto serie.
 void pipeline_dump_to_uart(bool format_csv) {
     uart_stage_dump_buffer(&s_circ_buffer, format_csv);
 }
 
-// Funciones pasarela (proxy) hacia processing_stage
+// Recorre BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS (SW3 y comando 'm').
+// En BYPASS se mantiene el último N (2048), así la ventana que se copia a la salida tiene
+// el mismo tamaño que la última FFT. Igual que el cambio de N, el modo nuevo recién se
+// aplica cuando arranca la próxima ventana (la ISR lo anota en s_fill_info).
 processing_mode_t pipeline_next_processing_mode(void) {
-    return processing_stage_next_mode();
+    // Se cambian dos variables que la ISR del ADC lee juntas al arrancar una ventana: sin
+    // la sección crítica, una ventana podría tomar el N nuevo con el modo viejo.
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (processing_stage_get_mode() == PROCESSING_MODE_BYPASS) {
+        s_pending_n = FFT_SIZE_512;
+        processing_stage_set_mode(PROCESSING_MODE_FFT);
+    } else if ((s_pending_n + 1) < FFT_SIZE_COUNT) {
+        s_pending_n = (fft_size_t)(s_pending_n + 1);
+    } else {
+        processing_stage_set_mode(PROCESSING_MODE_BYPASS);
+    }
+
+    __set_PRIMASK(primask);
+    return processing_stage_get_mode();
 }
+
+// Las demás funciones pasarela (proxy) hacia processing_stage
 
 processing_mode_t pipeline_get_processing_mode(void) {
     return processing_stage_get_mode();

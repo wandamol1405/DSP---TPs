@@ -42,7 +42,7 @@ El desarrollo se organiza según los issues de GitHub:
 
 2. **[Issue #15](https://github.com/wandamol1405/DSP---TPs/issues/15) - Implementación de la FFT con CMSIS-DSP y modo Bypass**:
    - Alternancia entre modo **FFT** y modo **Bypass** (buffer de salida independiente del de entrada).
-   - Cálculo de la FFT mediante `arm_rfft_fast_f32` (aprovechando FPU) con enventanado (Rectangular / Hann) y magnitud en dBFS (`arm_cmplx_mag_f32` + `log10`).
+   - Cálculo de la FFT en punto fijo $q_{15}$, como el resto del pipeline: remoción de la media, enventanado (Rectangular / Hann, tablas $q_{15}$), `arm_rfft_q15`, magnitud con `arm_cmplx_mag_q15` y búsqueda del pico con `arm_max_q15`. La conversión a dBFS se hace en la PC.
    - Medición de ciclos de CPU mediante DWT (`CYCCNT`).
 
 3. **[Issue #16](https://github.com/wandamol1405/DSP---TPs/issues/16) - Transmisión del resultado por UART**:
