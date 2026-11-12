@@ -2,10 +2,10 @@
 """
 Tests de FrameParser (TP3/tools/fft_gui.py) contra tramas sintéticas.
 
-No hay firmware real emitiendo el protocolo binario todavía (issues #14-#16
-del repo): mientras tanto, estos tests son la única forma de validar que el
-parser decodifica bien el formato descripto en TP3/README.md, incluida la
-recuperación ante CRC inválido y resincronización ante basura en el canal.
+Valida que el parser decodifique bien el formato descripto en
+TP3/decisiones.md ("Formato de la trama"):
+    Sync(2B=A5 5A) Type(1B) N(2B) Fs(4B) Payload(int16 x L)
+donde L = N/2 para FFT y L = N para BYPASS.
 
 Uso:
     cd TP3/tools && python3 -m pytest ../tests/test_frame_parser.py -v
@@ -21,38 +21,34 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from fft_gui import (  # noqa: E402
-    CRC_SIZE,
     FRAME_TYPE_BYPASS,
     FRAME_TYPE_FFT,
     HEADER_FMT,
     SYNC,
-    WINDOW_HANN,
-    WINDOW_RECT,
     FrameParser,
-    crc16_ccitt,
 )
 
 
-def encode_frame(type_, window, n, length, fs, seq, peak_bin, payload):
-    """Arma una trama binaria igual a como la mandaría el firmware."""
-    header = struct.pack(HEADER_FMT, type_, window, n, length, fs, seq, peak_bin)
+def encode_frame(type_, n, fs, payload):
+    """Arma una trama binaria igual a como la manda el firmware real."""
+    header = struct.pack(HEADER_FMT, type_, n, fs)
     payload_bytes = np.asarray(payload, dtype="<i2").tobytes()
-    assert len(payload_bytes) == length * 2
-    crc = crc16_ccitt(header + payload_bytes)
-    return SYNC + header + payload_bytes + struct.pack("<H", crc)
+    expected_length = (n // 2) if type_ == FRAME_TYPE_FFT else n
+    assert len(payload_bytes) == expected_length * 2
+    return SYNC + header + payload_bytes
 
 
-def make_fft_frame_bytes(n=512, fs=8000, seq=1, peak_bin=10, window=WINDOW_HANN):
+def make_fft_frame_bytes(n=512, fs=8000, peak_bin=10):
     length = n // 2
     payload = np.full(length, -4000, dtype=np.int16)  # -40.00 dB "piso"
     payload[peak_bin] = 0  # 0.00 dB en el pico
-    return encode_frame(FRAME_TYPE_FFT, window, n, length, fs, seq, peak_bin, payload)
+    return encode_frame(FRAME_TYPE_FFT, n, fs, payload)
 
 
-def make_bypass_frame_bytes(n=512, fs=8000, seq=1, window=WINDOW_RECT):
+def make_bypass_frame_bytes(n=512, fs=8000):
     length = n
     payload = (1000 * np.sin(2 * np.pi * np.arange(length) / 32)).astype(np.int16)
-    return encode_frame(FRAME_TYPE_BYPASS, window, n, length, fs, seq, 0, payload)
+    return encode_frame(FRAME_TYPE_BYPASS, n, fs, payload)
 
 
 def collect(parser, data):
@@ -71,9 +67,8 @@ def test_single_fft_frame_roundtrip():
     assert frame.n == 512
     assert frame.length == 256
     assert frame.fs == 8000
-    assert frame.seq == 1
     assert frame.peak_bin == 10
-    assert frame.window == WINDOW_HANN
+    assert frame.window_name == "Rectangular"
     db = frame.db()
     assert abs(db[10] - 0.0) < 1e-9
     assert abs(db[0] - (-40.0)) < 1e-9
@@ -89,19 +84,19 @@ def test_single_bypass_frame_roundtrip():
     assert kind == "frame"
     assert not frame.is_fft
     assert frame.length == frame.n == 512
-    assert frame.window == WINDOW_RECT
+    assert frame.window_name == "Rectangular"
     assert len(frame.payload) == 512
 
 
 def test_two_consecutive_frames_in_one_feed():
-    raw = make_fft_frame_bytes(seq=1) + make_fft_frame_bytes(seq=2)
+    raw = make_fft_frame_bytes(n=512) + make_fft_frame_bytes(n=1024)
     parser = FrameParser()
     events = collect(parser, raw)
 
     frames = [f for k, f in events if k == "frame"]
     assert len(frames) == 2
-    assert frames[0].seq == 1
-    assert frames[1].seq == 2
+    assert frames[0].n == 512
+    assert frames[1].n == 1024
 
 
 def test_frame_split_across_many_feeds_byte_by_byte():
@@ -113,43 +108,39 @@ def test_frame_split_across_many_feeds_byte_by_byte():
 
     frames = [f for k, f in events if k == "frame"]
     assert len(frames) == 1
-    assert frames[0].seq == 1
+    assert frames[0].n == 512
 
 
-def test_crc_error_is_detected_and_recovers():
-    raw = bytearray(make_fft_frame_bytes(seq=1))
-    # Corrompe un byte del payload (no toca el sync ni el header) para que
-    # el CRC no coincida, pero la trama siga siendo "plausible" (N/Length OK).
-    raw[len(SYNC) + struct.calcsize(HEADER_FMT) + 4] ^= 0xFF
-    corrupted = bytes(raw) + make_fft_frame_bytes(seq=2)
+def test_invalid_header_is_discarded_and_recovers():
+    # Sync seguido de parámetros no válidos (ej. tipo 99, N=123, Fs=999)
+    invalid_header = struct.pack(HEADER_FMT, 99, 123, 999)
+    bad_stream = SYNC + invalid_header + make_fft_frame_bytes(n=1024)
 
     parser = FrameParser()
-    events = collect(parser, corrupted)
-    kinds = [k for k, _ in events]
-
-    assert "crc_error" in kinds
+    events = collect(parser, bad_stream)
     frames = [f for k, f in events if k == "frame"]
+
     assert len(frames) == 1
-    assert frames[0].seq == 2  # se recuperó y decodificó la siguiente trama
+    assert frames[0].n == 1024
 
 
 def test_resync_after_garbage_with_fake_sync():
     garbage = b"ruido" + SYNC + b"\x00\x00no es un header valido"
-    stream = garbage + make_fft_frame_bytes(seq=7)
+    stream = garbage + make_fft_frame_bytes(n=2048)
 
     parser = FrameParser()
     events = collect(parser, stream)
     frames = [f for k, f in events if k == "frame"]
 
     assert len(frames) == 1
-    assert frames[0].seq == 7
+    assert frames[0].n == 2048
 
 
 def test_text_lines_interleaved_with_binary_frame():
     stream = (
         b"TP3 DSP - FFT (FRDM-MCXN947)\r\n"
         b"[INFO] Frecuencia de muestreo: 8000 Hz\r\n"
-        + make_fft_frame_bytes(seq=3)
+        + make_fft_frame_bytes(n=512)
         + b"[INFO] listo\r\n"
     )
 
@@ -163,19 +154,48 @@ def test_text_lines_interleaved_with_binary_frame():
     assert "[INFO] Frecuencia de muestreo: 8000 Hz" in texts
     assert "[INFO] listo" in texts
     assert len(frames) == 1
-    assert frames[0].seq == 3
+    assert frames[0].n == 512
 
 
 def test_partial_frame_waits_for_more_data():
     raw = make_fft_frame_bytes()
     parser = FrameParser()
 
-    events = collect(parser, raw[:10])  # sync + parte del header, nada más
+    events = collect(parser, raw[:6])  # sync + parte del header
     assert events == []
 
-    events = collect(parser, raw[10:])
+    events = collect(parser, raw[6:])
     frames = [f for k, f in events if k == "frame"]
     assert len(frames) == 1
+
+
+def test_peak_calculation_on_pc():
+    # N=512, Fs=8000 -> df = 15.625 Hz. Pico en bin 64 -> 1000 Hz.
+    raw = make_fft_frame_bytes(n=512, fs=8000, peak_bin=64)
+    parser = FrameParser()
+    events = collect(parser, raw)
+    assert len(events) == 1
+    _, frame = events[0]
+    assert frame.peak_bin == 64
+    assert abs(frame.peak_freq_hz - 1000.0) < 1e-9
+    assert abs(frame.peak_db - 0.0) < 1e-9
+
+
+def test_peak_calculation_ignores_dc():
+    # Simula un offset de continua grande en bin 0 (+5.00 dB = 500)
+    # y el pico real de la señal en bin 20 (-10.00 dB = -1000).
+    length = 256
+    payload = np.full(length, -5000, dtype=np.int16)
+    payload[0] = 500     # DC grande
+    payload[20] = -1000  # Pico de señal AC
+    raw = encode_frame(FRAME_TYPE_FFT, 512, 8000, payload)
+
+    parser = FrameParser()
+    events = collect(parser, raw)
+    assert len(events) == 1
+    _, frame = events[0]
+    assert frame.peak_bin == 20  # Ignora bin 0 y detecta bin 20
+    assert abs(frame.peak_db - (-10.0)) < 1e-9
 
 
 def _run_without_pytest():

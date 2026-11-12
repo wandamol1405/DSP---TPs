@@ -236,7 +236,7 @@ Para medirlo se usa un contador que trae el procesador y que suma uno por cada c
 | Decisión | Por qué | Dónde | Estado |
 | --- | --- | --- | --- |
 | Interfaz gráfica en Python con Tkinter y matplotlib | Graficar el espectro y la señal en el tiempo, y enviar comandos | `tools/fft_gui.py` | Implementado |
-| La interfaz se adapta a la trama mínima y a los comandos del firmware | Hoy espera una trama con más campos y tiene botones para comandos que no existen | `tools/fft_gui.py`, `tests/` | Pendiente (#24) |
+| La interfaz se adapta a la trama mínima y a los comandos del firmware | Decodifica la trama mínima (sync, tipo, N, Fs y datos) y envía los comandos reales del firmware | `tools/fft_gui.py`, `tests/` | Implementado |
 | Simulador de la placa para probar la interfaz sin hardware | Desarrollar la interfaz y el firmware por separado | `tests/fake_board.py` | Implementado |
 
 ### Proyecto de señal interna
