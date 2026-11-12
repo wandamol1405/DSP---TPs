@@ -206,7 +206,7 @@ A 115200 baudios se descartan varias ventanas por cada una que se envía. Se dec
 | BYPASS usa siempre N = 512 | Es el tamaño del buffer del Laboratorio #1, y el N de BYPASS no tiene que depender de qué FFT se usó antes | `pipeline.c` | Implementado |
 | La FFT usa `arm_cfft_q15` de CMSIS-DSP con las instancias de 512, 1024 y 2048, y después `arm_cmplx_mag_q15` | Funciones de la biblioteca recomendada; el resultado va a un buffer de salida propio | `processing_stage.c` | Implementado |
 | Se mandan los bins 0 a N/2 − 1 en dBFS × 100 | 0 dB es un tono de amplitud máxima para cualquier N, y un bin en 0 vale −100 dB. Entero de 16 bits con dos decimales, sin floats en la trama | `processing_stage.c` | Implementado |
-| Sin ventana Hann ni remoción de la media en el firmware: solo ventana rectangular | La consigna no las pide. El efecto de la ventana se muestra en un cuaderno de Jupyter con señales simuladas | — | Cuaderno pendiente (#28) |
+| Sin ventana Hann ni remoción de la media en el firmware: solo ventana rectangular | La consigna no las pide. El efecto de la ventana se muestra en un cuaderno de Jupyter con señales simuladas | `notebooks/fft_ventanas_y_fenomenos.ipynb` | Implementado |
 | El firmware busca el bin de mayor magnitud, sin contar el de continua, y muestra su frecuencia en el OLED | Es el resultado de la FFT que se puede leer en la placa sin la PC. No se agrega a la trama | `processing_stage.c`, `ui.c` | Implementado |
 | El OLED muestra Fs, modo, N, resolución en frecuencia y frecuencia del pico | Representa el estado del sistema | `ui.c` | Implementado |
 | Se mide cuánto tarda el procesador en calcular la FFT para cada N | Compararlo con la duración de la ventana (ver abajo) | `pipeline.c` | Pendiente (#30) |

@@ -9,6 +9,7 @@ Realizar un programa que calcule la Transformada Rápida de Fourier (FFT) sobre 
 | `MCXN947_Project_TP3/` | Proyecto de MCUXpresso con el firmware de la placa |
 | `tools/` | Interfaz gráfica en Python para ver el espectro en la PC |
 | `tests/` | Pruebas de la interfaz gráfica y simulador de la placa |
+| `notebooks/` | Cuaderno de Jupyter sobre ventanas y fenómenos de la FFT |
 | `images/` | Capturas y mediciones (todavía vacía) |
 | `decisiones.md` | Arquitectura, formato de la trama y decisiones de diseño |
 
@@ -107,6 +108,17 @@ Para correr las pruebas del lector de tramas:
 
 ```bash
 venv/bin/python3 ../tests/test_frame_parser.py
+```
+
+## Cuaderno de Jupyter
+
+[notebooks/fft_ventanas_y_fenomenos.ipynb](notebooks/fft_ventanas_y_fenomenos.ipynb) muestra con señales simuladas la resolución en frecuencia, el muestreo coherente, la fuga espectral, el efecto de la ventana (rectangular contra Hann), el aliasing y el piso de cálculo de la FFT en q15, y los compara con las capturas de la placa. Está guardado con los resultados, así que se puede leer en GitHub sin ejecutarlo.
+
+Para ejecutarlo, desde `TP3/tools/`:
+
+```bash
+venv/bin/pip install jupyter
+venv/bin/jupyter notebook ../notebooks/fft_ventanas_y_fenomenos.ipynb
 ```
 
 ## Más información
