@@ -22,9 +22,9 @@ static volatile bool s_frame_busy = false;     // true desde que se pide procesa
 
 // Tamaño de ventana. s_pending_n es el que eligió el usuario; s_frame_n es el de la ventana
 // que se está llenando, y solo cambia cuando la ISR arranca una ventana nueva (s_idx == 0).
-// Así una ventana nunca mezcla muestras de dos N distintos.
-static volatile fft_size_t s_pending_n = FFT_SIZE_1024;
-static uint32_t s_frame_n = 1024U;             // solo lo usa la ISR
+// Así una ventana nunca mezcla muestras de dos N distintos. Arranca en BYPASS con N = 512.
+static volatile fft_size_t s_pending_n = FFT_SIZE_512;
+static uint32_t s_frame_n = 512U;              // solo lo usa la ISR
 
 // Descriptores: s_fill_info es el de la ventana que se está llenando (lo arma la ISR al
 // arrancarla) y s_ready_info el de la ventana que procesa PendSV.
@@ -238,9 +238,9 @@ circular_buffer_t* pipeline_get_circular_buffer(void) {
 }
 
 // Recorre BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS (SW3 y comando 'm').
-// En BYPASS se mantiene el último N (2048), así la ventana que se copia a la salida tiene
-// el mismo tamaño que la última FFT. Igual que el cambio de N, el modo nuevo recién se
-// aplica cuando arranca la próxima ventana (la ISR lo anota en s_fill_info).
+// En BYPASS se usa siempre N = 512 (el tamaño del buffer del Laboratorio #1). Igual que el
+// cambio de N, el modo nuevo recién se aplica cuando arranca la próxima ventana (la ISR lo
+// anota en s_fill_info).
 processing_mode_t pipeline_next_processing_mode(void) {
     // Se cambian dos variables que la ISR del ADC lee juntas al arrancar una ventana: sin
     // la sección crítica, una ventana podría tomar el N nuevo con el modo viejo.
@@ -253,6 +253,7 @@ processing_mode_t pipeline_next_processing_mode(void) {
     } else if ((s_pending_n + 1) < FFT_SIZE_COUNT) {
         s_pending_n = (fft_size_t)(s_pending_n + 1);
     } else {
+        s_pending_n = FFT_SIZE_512;
         processing_stage_set_mode(PROCESSING_MODE_BYPASS);
     }
 
