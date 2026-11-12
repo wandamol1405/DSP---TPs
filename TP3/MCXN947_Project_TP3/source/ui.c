@@ -15,17 +15,17 @@
  * del display hasta el próximo refresco completo).
  *
  * Distribución (128x64, 16x8 tiles). El panel bicolor típico de 0.96" tiene amarillo en las
- * primeras 16 filas (tiles 0-1) y azul en las 48 restantes: el encabezado (nombre del filtro
- * activo) ocupa justo la franja amarilla y nada atraviesa el límite y=16.
+ * primeras 16 filas (tiles 0-1) y azul en las 48 restantes: el encabezado (modo y N) ocupa
+ * justo la franja amarilla y nada atraviesa el límite y=16.
  *
- *   x:  0.....47 | 48..........127
- *   y0  +-----------------------+
- *       |      <FILTRO>         |  HEADER  (tiles 0,0  16x2)
- *   y16 +--------+--------------+
- *       | grafico|  Fs: ...     |  GRAPH   (tiles 0,2  6x4) | FS (tiles 6,2 10x2)
- *       |        |  Fc: ...     |                           | FC (tiles 6,4 10x2)
- *   y48 |  TAPS  |  BW: ...     |  TAPS    (tiles 0,6  6x2) | BW (tiles 6,6 10x2)
- *   y63 +--------+--------------+
+ *   x:  0...........55 | 56..........127
+ *   y0  +--------------+---------------+
+ *       |  <MODO>      |       N: <N>  |  MODE (tiles 0,0 7x2) | N (tiles 7,0 9x2)
+ *   y16 +--------------+---------------+
+ *       |  Fs:   ...                   |  FS   (tiles 0,2 16x2)
+ *   y32 |  df:   ...                   |  DF   (tiles 0,4 16x2)
+ *   y48 |  Pico: ...                   |  PEAK (tiles 0,6 16x2)
+ *   y63 +------------------------------+
  */
 
 #include "ui.h"
@@ -42,12 +42,11 @@ typedef struct {
     uint8_t th; // alto en tiles
 } ui_region_t;
 
-static const ui_region_t REGION_HEADER = {0, 0, 16, 2};
-static const ui_region_t REGION_GRAPH = {0, 2, 6, 4};
-static const ui_region_t REGION_TAPS = {0, 6, 6, 2};
-static const ui_region_t REGION_FS = {6, 2, 10, 2};
-static const ui_region_t REGION_FC = {6, 4, 10, 2};
-static const ui_region_t REGION_BW = {6, 6, 10, 2};
+static const ui_region_t REGION_MODE = {0, 0, 7, 2};
+static const ui_region_t REGION_N    = {7, 0, 9, 2};
+static const ui_region_t REGION_FS   = {0, 2, 16, 2};
+static const ui_region_t REGION_DF   = {0, 4, 16, 2};
+static const ui_region_t REGION_PEAK = {0, 6, 16, 2};
 
 #define TILE_PX 8u
 
@@ -55,63 +54,22 @@ static const ui_region_t REGION_BW = {6, 6, 10, 2};
 // Fuentes y posiciones de texto (en píxeles)
 // ============================================================================
 #define FONT_HEADER u8g2_font_7x14_tr
-#define FONT_TAPS u8g2_font_5x8_tr
-#define FONT_PARAM u8g2_font_6x12_tr
+#define FONT_PARAM  u8g2_font_6x12_tr
 
-#define HEADER_BASELINE_Y 12u // dentro de la franja amarilla (y < 16)
-#define SEPARATOR_X 47u       // línea vertical entre la columna del filtro y la de parámetros
-#define PARAM_LABEL_X 50u
-#define PARAM_VALUE_X 70u
-#define PARAM_BASELINE_OFFSET 12u // baseline respecto del borde superior de la región (16 px de alto)
-#define TAPS_BOX_X 1u
-#define TAPS_BOX_W 45u
-#define TAPS_BOX_Y 51u
-#define TAPS_BOX_H 11u
-#define TAPS_BASELINE_Y 59u
+#define HEADER_BASELINE_Y     12u  // dentro de la franja amarilla (y < 16)
+#define HEADER_MODE_X         4u   // margen izquierdo del modo en el encabezado
+#define HEADER_N_RIGHT_X      124u // borde derecho de "N: <N>" en el encabezado
+#define PARAM_LABEL_X         4u
+#define PARAM_VALUE_X         44u
+#define PARAM_BASELINE_OFFSET 12u  // baseline respecto del borde superior de la región (16 px de alto)
 
-// Máximo valor mostrable: asegura que "99999 kHz" (9 caracteres de 6 px) entre en la región de valores
-#define UI_MAX_DISPLAY_HZ 99999000u
-#define UI_MAX_DISPLAY_TAPS 9999u
-#define UI_VALUE_BUF_SIZE 12u
+#define UI_MAX_DISPLAY_HZ   99999000u
+#define UI_MAX_DISPLAY_N    9999u
+#define UI_VALUE_BUF_SIZE   14u
 
-// ============================================================================
-// Gráficos de respuesta en frecuencia: polilíneas (sin bitmaps, cero bytes de assets)
-// Área de trazado: x 8..42, nivel alto y=26, nivel bajo y=40; ejes en x=6 e y=44.
-// ============================================================================
-#define GX0 8u
-#define GX1 42u
-#define GY_HI 26u
-#define GY_LO 40u
-#define AXIS_X 6u
-#define AXIS_Y 44u
-#define AXIS_TOP_Y 22u
-
-typedef struct {
-    uint8_t x;
-    uint8_t y;
-} ui_point_t;
-
-static const ui_point_t SHAPE_BYPASS[] = {{GX0, GY_HI}, {GX1, GY_HI}};
-static const ui_point_t SHAPE_LOWPASS[] = {{GX0, GY_HI}, {24, GY_HI}, {32, GY_LO}, {GX1, GY_LO}};
-static const ui_point_t SHAPE_HIGHPASS[] = {{GX0, GY_LO}, {18, GY_LO}, {26, GY_HI}, {GX1, GY_HI}};
-static const ui_point_t SHAPE_BANDPASS[] = {{GX0, GY_LO}, {14, GY_LO}, {19, GY_HI}, {31, GY_HI}, {36, GY_LO}, {GX1, GY_LO}};
-static const ui_point_t SHAPE_BANDSTOP[] = {{GX0, GY_HI}, {14, GY_HI}, {19, GY_LO}, {31, GY_LO}, {36, GY_HI}, {GX1, GY_HI}};
-
-typedef struct {
-    const char *name;
-    const ui_point_t *shape;
-    uint8_t shape_len;
-} ui_filter_info_t;
-
-#define SHAPE(arr) arr, (uint8_t)(sizeof(arr) / sizeof(arr[0]))
-
-// Indexada por ui_filter_t
-static const ui_filter_info_t FILTER_INFO[UI_FILTER_COUNT] = {
-    [UI_FILTER_BYPASS] = {"BYPASS", SHAPE(SHAPE_BYPASS)},
-    [UI_FILTER_LOWPASS] = {"LOWPASS", SHAPE(SHAPE_LOWPASS)},
-    [UI_FILTER_HIGHPASS] = {"HIGHPASS", SHAPE(SHAPE_HIGHPASS)},
-    [UI_FILTER_BANDPASS] = {"BANDPASS", SHAPE(SHAPE_BANDPASS)},
-    [UI_FILTER_BANDSTOP] = {"BANDSTOP", SHAPE(SHAPE_BANDSTOP)},
+static const char *const MODE_NAMES[UI_MODE_COUNT] = {
+    [UI_MODE_BYPASS] = "BYPASS",
+    [UI_MODE_FFT]    = "FFT",
 };
 
 // ============================================================================
@@ -119,30 +77,28 @@ static const ui_filter_info_t FILTER_INFO[UI_FILTER_COUNT] = {
 // ============================================================================
 typedef struct {
     uint32_t fs_hz;
-    uint32_t fc_hz;
-    uint32_t bw_hz;
-    ui_filter_t filter;
-    uint16_t taps;
+    uint32_t peak_hz;
+    uint16_t n;
+    ui_mode_t mode;
 } ui_state_t;
 
 // Bits de s_dirty: qué parámetros cambiaron desde el último ui_process()
-#define UI_DIRTY_FS (1u << 0)
-#define UI_DIRTY_FC (1u << 1)
-#define UI_DIRTY_BW (1u << 2)
-#define UI_DIRTY_FILTER (1u << 3)
+#define UI_DIRTY_MODE (1u << 0)
+#define UI_DIRTY_N    (1u << 1)
+#define UI_DIRTY_FS   (1u << 2)
+#define UI_DIRTY_PEAK (1u << 3)
 #define UI_DIRTY_FULL (1u << 4)
-#define UI_DIRTY_TAPS (1u << 5)
 
-static u8g2_t s_u8g2; // instancia de U8g2 (incluye el framebuffer de 1024 B)
+static u8g2_t s_u8g2;          // instancia de U8g2 (incluye el framebuffer de 1024 B)
 static bool s_enabled = false; // true una vez que el display inicializó correctamente
 
 // Estado pedido por la aplicación. Lo escriben los ui_set_*() (posiblemente desde ISR) y lo lee
 // ui_process(); todo acceso es dentro de una sección crítica.
-static ui_state_t s_pending = {UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_FILTER_BYPASS, UI_TAPS_NONE};
+static ui_state_t s_pending = {UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_WINDOW_SIZE_NONE, UI_MODE_BYPASS};
 static uint8_t s_dirty = 0;
 
 // Estado que realmente está dibujado en el display. Solo lo toca el contexto principal.
-static ui_state_t s_shown = {UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_FILTER_BYPASS, UI_TAPS_NONE};
+static ui_state_t s_shown = {UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_WINDOW_SIZE_NONE, UI_MODE_BYPASS};
 
 // ============================================================================
 // Formato de texto (sin printf: Redlib con CR_INTEGER_PRINTF no soporta flotantes y evita código extra)
@@ -167,8 +123,8 @@ static char *append_uint(char *p, uint32_t v) {
     return p;
 }
 
-// Formatea una frecuencia: "--", "440 Hz", "8 kHz", "22.05 kHz", "44.1 kHz" (máx. 9 caracteres).
-static void format_frequency(char *buf, uint32_t hz) {
+// Formatea la frecuencia de muestreo: "--", "8 kHz", "22.05 kHz", "48 kHz".
+static void format_sampling_frequency(char *buf, uint32_t hz) {
     char *p = buf;
 
     if (hz == UI_FREQUENCY_NONE) {
@@ -198,16 +154,50 @@ static void format_frequency(char *buf, uint32_t hz) {
     *p = '\0';
 }
 
-// Formatea la cantidad de taps: "-- TAPS", "28 TAPS", "956 TAPS" (máx. 9 caracteres).
-static void format_taps(char *buf, uint16_t taps) {
+// Formatea la resolución en frecuencia df = Fs / N con un decimal en Hz: "--", "15.6 Hz", "3.9 Hz".
+static void format_resolution(char *buf, uint32_t fs_hz, uint16_t n) {
     char *p = buf;
 
-    if (taps == UI_TAPS_NONE) {
-        p = append_str(p, "-- TAPS");
+    if ((fs_hz == UI_FREQUENCY_NONE) || (n == UI_WINDOW_SIZE_NONE)) {
+        p = append_str(p, "--");
     } else {
-        uint16_t val = (taps > UI_MAX_DISPLAY_TAPS) ? UI_MAX_DISPLAY_TAPS : taps;
+        if (fs_hz > UI_MAX_DISPLAY_HZ) {
+            fs_hz = UI_MAX_DISPLAY_HZ;
+        }
+        uint32_t df_x10 = (fs_hz * 10u + ((uint32_t)n / 2u)) / (uint32_t)n;
+        p = append_uint(p, df_x10 / 10u);
+        *p++ = '.';
+        *p++ = (char)('0' + (df_x10 % 10u));
+        p = append_str(p, " Hz");
+    }
+    *p = '\0';
+}
+
+// Formatea la frecuencia del pico en Hz enteros: "--", "1000 Hz", "988 Hz", "1008 Hz".
+static void format_peak_frequency(char *buf, uint32_t hz) {
+    char *p = buf;
+
+    if (hz == UI_FREQUENCY_NONE) {
+        p = append_str(p, "--");
+    } else {
+        if (hz > UI_MAX_DISPLAY_HZ) {
+            hz = UI_MAX_DISPLAY_HZ;
+        }
+        p = append_uint(p, hz);
+        p = append_str(p, " Hz");
+    }
+    *p = '\0';
+}
+
+// Formatea el tamaño de ventana: "N: --", "N: 512", "N: 1024", "N: 2048".
+static void format_window_size(char *buf, uint16_t n) {
+    char *p = append_str(buf, "N: ");
+
+    if (n == UI_WINDOW_SIZE_NONE) {
+        p = append_str(p, "--");
+    } else {
+        uint16_t val = (n > UI_MAX_DISPLAY_N) ? UI_MAX_DISPLAY_N : n;
         p = append_uint(p, val);
-        p = append_str(p, " TAPS");
     }
     *p = '\0';
 }
@@ -229,61 +219,35 @@ static void flush_region(const ui_region_t *r) {
     u8g2_UpdateDisplayArea(&s_u8g2, r->tx, r->ty, r->tw, r->th);
 }
 
-static void draw_header(ui_filter_t type) {
-    const char *name = FILTER_INFO[type].name;
+static void draw_mode(ui_mode_t mode) {
+    const char *name = MODE_NAMES[mode];
 
-    clear_region(&REGION_HEADER);
-    u8g2_SetFontMode(&s_u8g2, 1); // fuente transparente
-    u8g2_SetFontDirection(&s_u8g2, 0);
-    u8g2_SetFont(&s_u8g2, FONT_HEADER);
-    u8g2_uint_t w = u8g2_GetStrWidth(&s_u8g2, name);
-    u8g2_DrawStr(&s_u8g2, (u8g2_uint_t)((128u - w) / 2u), HEADER_BASELINE_Y, name);
-    u8g2_DrawHLine(&s_u8g2, 0, 15, 128); // separador, última fila de la franja amarilla
-}
-
-static void draw_filter_graph(ui_filter_t type) {
-    const ui_filter_info_t *info = &FILTER_INFO[type];
-
-    clear_region(&REGION_GRAPH);
-    u8g2_DrawVLine(&s_u8g2, SEPARATOR_X, REGION_GRAPH.ty * TILE_PX, REGION_GRAPH.th * TILE_PX);
-
-    // Ejes
-    u8g2_DrawVLine(&s_u8g2, AXIS_X, AXIS_TOP_Y, AXIS_Y - AXIS_TOP_Y + 1u);
-    u8g2_DrawHLine(&s_u8g2, AXIS_X, AXIS_Y, GX1 - AXIS_X + 1u);
-
-    // Curva de 2 px de espesor
-    for (uint8_t i = 0; (i + 1u) < info->shape_len; i++) {
-        const ui_point_t *a = &info->shape[i];
-        const ui_point_t *b = &info->shape[i + 1u];
-        u8g2_DrawLine(&s_u8g2, a->x, a->y, b->x, b->y);
-        u8g2_DrawLine(&s_u8g2, a->x, (u8g2_uint_t)(a->y + 1u), b->x, (u8g2_uint_t)(b->y + 1u));
-    }
-}
-
-static void draw_taps(uint16_t taps) {
-    char label[UI_VALUE_BUF_SIZE];
-    format_taps(label, taps);
-
-    clear_region(&REGION_TAPS);
-    u8g2_DrawVLine(&s_u8g2, SEPARATOR_X, REGION_TAPS.ty * TILE_PX, REGION_TAPS.th * TILE_PX);
-
-    // Etiqueta en video inverso, centrada
-    u8g2_DrawBox(&s_u8g2, TAPS_BOX_X, TAPS_BOX_Y, TAPS_BOX_W, TAPS_BOX_H);
+    clear_region(&REGION_MODE);
     u8g2_SetFontMode(&s_u8g2, 1);
     u8g2_SetFontDirection(&s_u8g2, 0);
-    u8g2_SetFont(&s_u8g2, FONT_TAPS);
+    u8g2_SetFont(&s_u8g2, FONT_HEADER);
+    u8g2_DrawStr(&s_u8g2, HEADER_MODE_X, HEADER_BASELINE_Y, name);
+    u8g2_DrawHLine(&s_u8g2, (u8g2_uint_t)(REGION_MODE.tx * TILE_PX), 15,
+                   (u8g2_uint_t)(REGION_MODE.tw * TILE_PX));
+}
+
+static void draw_window_size(uint16_t n) {
+    char label[UI_VALUE_BUF_SIZE];
+    format_window_size(label, n);
+
+    clear_region(&REGION_N);
+    u8g2_SetFontMode(&s_u8g2, 1);
+    u8g2_SetFontDirection(&s_u8g2, 0);
+    u8g2_SetFont(&s_u8g2, FONT_HEADER);
     u8g2_uint_t w = u8g2_GetStrWidth(&s_u8g2, label);
-    u8g2_SetDrawColor(&s_u8g2, 0);
-    u8g2_DrawStr(&s_u8g2, (u8g2_uint_t)(TAPS_BOX_X + (TAPS_BOX_W - w) / 2u), TAPS_BASELINE_Y, label);
-    u8g2_SetDrawColor(&s_u8g2, 1);
+    u8g2_DrawStr(&s_u8g2, (u8g2_uint_t)(HEADER_N_RIGHT_X - w), HEADER_BASELINE_Y, label);
+    u8g2_DrawHLine(&s_u8g2, (u8g2_uint_t)(REGION_N.tx * TILE_PX), 15,
+                   (u8g2_uint_t)(REGION_N.tw * TILE_PX));
 }
 
 // Dibuja una fila "Etiqueta: valor" en su región (borra primero para no dejar restos de caracteres)
-static void draw_param(const ui_region_t *r, const char *label, uint32_t hz) {
-    char value[UI_VALUE_BUF_SIZE];
+static void draw_row(const ui_region_t *r, const char *label, const char *value) {
     u8g2_uint_t baseline = (u8g2_uint_t)(r->ty * TILE_PX + PARAM_BASELINE_OFFSET);
-
-    format_frequency(value, hz);
 
     clear_region(r);
     u8g2_SetFontMode(&s_u8g2, 1);
@@ -293,15 +257,32 @@ static void draw_param(const ui_region_t *r, const char *label, uint32_t hz) {
     u8g2_DrawStr(&s_u8g2, PARAM_VALUE_X, baseline, value);
 }
 
+static void draw_fs(uint32_t fs_hz) {
+    char value[UI_VALUE_BUF_SIZE];
+    format_sampling_frequency(value, fs_hz);
+    draw_row(&REGION_FS, "Fs:", value);
+}
+
+static void draw_df(uint32_t fs_hz, uint16_t n) {
+    char value[UI_VALUE_BUF_SIZE];
+    format_resolution(value, fs_hz, n);
+    draw_row(&REGION_DF, "df:", value);
+}
+
+static void draw_peak(uint32_t peak_hz) {
+    char value[UI_VALUE_BUF_SIZE];
+    format_peak_frequency(value, peak_hz);
+    draw_row(&REGION_PEAK, "Pico:", value);
+}
+
 // Reconstruye todo el framebuffer a partir de un estado y lo transmite completo
 static void draw_full(const ui_state_t *st) {
     u8g2_ClearBuffer(&s_u8g2);
-    draw_header(st->filter);
-    draw_filter_graph(st->filter);
-    draw_taps(st->taps);
-    draw_param(&REGION_FS, "Fs:", st->fs_hz);
-    draw_param(&REGION_FC, "Fc:", st->fc_hz);
-    draw_param(&REGION_BW, "BW:", st->bw_hz);
+    draw_mode(st->mode);
+    draw_window_size(st->n);
+    draw_fs(st->fs_hz);
+    draw_df(st->fs_hz, st->n);
+    draw_peak(st->peak_hz);
     u8g2_SendBuffer(&s_u8g2);
 }
 
@@ -317,7 +298,7 @@ bool ui_init(void) {
 
     // Pantalla completa con el estado por defecto; los cambios pedidos antes de ui_init()
     // (si los hubiera) quedaron en s_pending/s_dirty y se aplican en el primer ui_process()
-    s_shown = (ui_state_t){UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_FILTER_BYPASS, UI_TAPS_NONE};
+    s_shown = (ui_state_t){UI_FREQUENCY_NONE, UI_FREQUENCY_NONE, UI_WINDOW_SIZE_NONE, UI_MODE_BYPASS};
     draw_full(&s_shown);
 
     s_enabled = true;
@@ -330,6 +311,27 @@ void ui_show_screen(void) {
     EnableGlobalIRQ(primask);
 }
 
+void ui_set_mode(ui_mode_t mode) {
+    if ((unsigned int)mode >= (unsigned int)UI_MODE_COUNT) {
+        return;
+    }
+    uint32_t primask = DisableGlobalIRQ();
+    if (s_pending.mode != mode) {
+        s_pending.mode = mode;
+        s_dirty |= UI_DIRTY_MODE;
+    }
+    EnableGlobalIRQ(primask);
+}
+
+void ui_set_window_size(uint16_t n) {
+    uint32_t primask = DisableGlobalIRQ();
+    if (s_pending.n != n) {
+        s_pending.n = n;
+        s_dirty |= UI_DIRTY_N;
+    }
+    EnableGlobalIRQ(primask);
+}
+
 void ui_set_sampling_frequency(uint32_t hz) {
     uint32_t primask = DisableGlobalIRQ();
     if (s_pending.fs_hz != hz) {
@@ -339,41 +341,11 @@ void ui_set_sampling_frequency(uint32_t hz) {
     EnableGlobalIRQ(primask);
 }
 
-void ui_set_filter_type(ui_filter_t type) {
-    if ((unsigned int)type >= (unsigned int)UI_FILTER_COUNT) {
-        return;
-    }
+void ui_set_peak_frequency(uint32_t hz) {
     uint32_t primask = DisableGlobalIRQ();
-    if (s_pending.filter != type) {
-        s_pending.filter = type;
-        s_dirty |= UI_DIRTY_FILTER;
-    }
-    EnableGlobalIRQ(primask);
-}
-
-void ui_set_cutoff_frequency(uint32_t hz) {
-    uint32_t primask = DisableGlobalIRQ();
-    if (s_pending.fc_hz != hz) {
-        s_pending.fc_hz = hz;
-        s_dirty |= UI_DIRTY_FC;
-    }
-    EnableGlobalIRQ(primask);
-}
-
-void ui_set_bandwidth(uint32_t hz) {
-    uint32_t primask = DisableGlobalIRQ();
-    if (s_pending.bw_hz != hz) {
-        s_pending.bw_hz = hz;
-        s_dirty |= UI_DIRTY_BW;
-    }
-    EnableGlobalIRQ(primask);
-}
-
-void ui_set_filter_taps(uint16_t taps) {
-    uint32_t primask = DisableGlobalIRQ();
-    if (s_pending.taps != taps) {
-        s_pending.taps = taps;
-        s_dirty |= UI_DIRTY_TAPS;
+    if (s_pending.peak_hz != hz) {
+        s_pending.peak_hz = hz;
+        s_dirty |= UI_DIRTY_PEAK;
     }
     EnableGlobalIRQ(primask);
 }
@@ -401,32 +373,33 @@ void ui_process(void) {
         return;
     }
 
+    bool df_changed = false;
+
     // Cada parámetro actualiza solo su región, y solo si el valor mostrado realmente difiere
-    if (((dirty & UI_DIRTY_FILTER) != 0u) && (want.filter != s_shown.filter)) {
-        s_shown.filter = want.filter;
-        draw_header(s_shown.filter);
-        flush_region(&REGION_HEADER);
-        draw_filter_graph(s_shown.filter);
-        flush_region(&REGION_GRAPH);
+    if (((dirty & UI_DIRTY_MODE) != 0u) && (want.mode != s_shown.mode)) {
+        s_shown.mode = want.mode;
+        draw_mode(s_shown.mode);
+        flush_region(&REGION_MODE);
     }
-    if (((dirty & UI_DIRTY_TAPS) != 0u) && (want.taps != s_shown.taps)) {
-        s_shown.taps = want.taps;
-        draw_taps(s_shown.taps);
-        flush_region(&REGION_TAPS);
+    if (((dirty & UI_DIRTY_N) != 0u) && (want.n != s_shown.n)) {
+        s_shown.n = want.n;
+        draw_window_size(s_shown.n);
+        flush_region(&REGION_N);
+        df_changed = true;
     }
     if (((dirty & UI_DIRTY_FS) != 0u) && (want.fs_hz != s_shown.fs_hz)) {
         s_shown.fs_hz = want.fs_hz;
-        draw_param(&REGION_FS, "Fs:", s_shown.fs_hz);
+        draw_fs(s_shown.fs_hz);
         flush_region(&REGION_FS);
+        df_changed = true;
     }
-    if (((dirty & UI_DIRTY_FC) != 0u) && (want.fc_hz != s_shown.fc_hz)) {
-        s_shown.fc_hz = want.fc_hz;
-        draw_param(&REGION_FC, "Fc:", s_shown.fc_hz);
-        flush_region(&REGION_FC);
+    if (df_changed) {
+        draw_df(s_shown.fs_hz, s_shown.n);
+        flush_region(&REGION_DF);
     }
-    if (((dirty & UI_DIRTY_BW) != 0u) && (want.bw_hz != s_shown.bw_hz)) {
-        s_shown.bw_hz = want.bw_hz;
-        draw_param(&REGION_BW, "BW:", s_shown.bw_hz);
-        flush_region(&REGION_BW);
+    if (((dirty & UI_DIRTY_PEAK) != 0u) && (want.peak_hz != s_shown.peak_hz)) {
+        s_shown.peak_hz = want.peak_hz;
+        draw_peak(s_shown.peak_hz);
+        flush_region(&REGION_PEAK);
     }
 }

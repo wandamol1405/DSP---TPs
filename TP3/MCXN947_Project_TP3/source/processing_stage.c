@@ -31,9 +31,11 @@ static q15_t s_cfft_buf[2U * PROCESSING_MAX_FRAME];
 static q15_t s_mag[PROCESSING_MAX_FRAME / 2U];
 
 static volatile processing_mode_t s_current_mode = PROCESSING_MODE_BYPASS;
+static uint16_t s_peak_bin = 0U;
 
 void processing_stage_init(void) {
     s_current_mode = PROCESSING_MODE_BYPASS;
+    s_peak_bin = 0U;
 }
 
 void processing_stage_set_mode(processing_mode_t mode) {
@@ -54,8 +56,8 @@ const char* processing_stage_get_mode_name(processing_mode_t mode) {
     }
 }
 
-uint16_t processing_stage_get_num_taps(void) {
-    return 0;
+uint16_t processing_stage_get_peak_bin(void) {
+    return s_peak_bin;
 }
 
 // Instancia de CMSIS para cada N soportado (NULL si N no es válido)
@@ -101,7 +103,13 @@ static uint32_t process_fft(const q15_t *in, uint32_t n, int16_t *out) {
     uint32_t bins = n / 2U;
     arm_cmplx_mag_q15(s_cfft_buf, s_mag, bins);
 
-    // 4. dBFS x 100
+    // 4. Bin de mayor magnitud, sin contar el de continua (bin 0)
+    q15_t peak_mag = 0;
+    uint32_t peak_offset = 0U;
+    arm_max_q15(&s_mag[1], bins - 1U, &peak_mag, &peak_offset);
+    s_peak_bin = (uint16_t)(1U + peak_offset);
+
+    // 5. dBFS x 100
     for (uint32_t k = 0; k < bins; k++) {
         out[k] = mag_to_db_x100(s_mag[k], k == 0U);
     }
@@ -120,6 +128,7 @@ uint32_t processing_stage_process_frame(processing_mode_t mode, const q15_t *in,
 
         case PROCESSING_MODE_BYPASS:
             // La ventana se copia tal cual al buffer de salida
+            s_peak_bin = 0U;
             arm_copy_q15(in, out, n);
             return n;
 

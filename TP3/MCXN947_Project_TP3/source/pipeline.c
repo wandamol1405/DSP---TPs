@@ -39,6 +39,8 @@ static frame_info_t s_out_info;                // con qué Fs, N y modo se calcu
 
 static volatile uint32_t s_overrun_count = 0;   // ventanas que no se procesaron a tiempo
 static volatile bool s_overrun_pending = false; // aviso para el loop principal
+static volatile uint32_t s_peak_freq_hz = PIPELINE_PEAK_NONE; // frecuencia del pico (k * Fs / N) de la última FFT
+static volatile bool s_peak_updated = false;    // aviso para que el loop principal refresque el pico en la UI
 
 // Cantidad de muestras de cada tamaño de ventana, indexada por fft_size_t
 static const uint16_t s_fft_size_n[FFT_SIZE_COUNT] = {
@@ -151,6 +153,14 @@ void pipeline_process_block(void) {
     // Etapa 2: FFT o BYPASS, según el modo con el que se tomó la ventana (no el actual)
     s_out_len = processing_stage_process_frame((processing_mode_t)s_ready_info.mode, in, n, s_frame_out);
     s_out_info = s_ready_info;
+
+    if ((s_ready_info.mode == PROCESSING_MODE_FFT) && (s_out_len > 0U) && (n > 0U)) {
+        uint32_t k = processing_stage_get_peak_bin();
+        s_peak_freq_hz = (k * s_ready_info.fs_hz + (n / 2U)) / n;
+    } else {
+        s_peak_freq_hz = PIPELINE_PEAK_NONE;
+    }
+    s_peak_updated = true;
 
     // Etapa 3: el buffer de salida por UART, en binario, si se pidió
     send_output_frame();
@@ -271,6 +281,18 @@ const char* pipeline_get_processing_mode_name(void) {
     return processing_stage_get_mode_name(processing_stage_get_mode());
 }
 
-uint16_t pipeline_get_num_taps(void) {
-    return processing_stage_get_num_taps();
+uint32_t pipeline_get_peak_frequency_hz(void) {
+    if ((processing_stage_get_mode() != PROCESSING_MODE_FFT) ||
+        (s_out_info.mode != PROCESSING_MODE_FFT) ||
+        (s_out_info.n != pipeline_get_fft_size_n()) ||
+        (s_out_info.fs_hz != pipeline_get_sample_rate_hz())) {
+        return PIPELINE_PEAK_NONE;
+    }
+    return s_peak_freq_hz;
+}
+
+bool pipeline_take_peak_updated(void) {
+    bool updated = s_peak_updated;
+    s_peak_updated = false;
+    return updated;
 }
