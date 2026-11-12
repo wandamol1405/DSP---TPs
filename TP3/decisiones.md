@@ -174,16 +174,61 @@ Además de las tramas había tres salidas de texto heredadas del TP1 y del TP2: 
 
 ### Velocidad del puerto
 
-Cuánto tarda en salir una trama, contra lo que dura la ventana más corta de ese tamaño (a 48 kHz):
+#### Análisis teórico y justificación de 921600 baudios
 
-| Trama | Tamaño | A 115200 baudios | A 921600 baudios | Ventana a 48 kHz |
-| --- | --- | --- | --- | --- |
-| FFT 512 | 521 B | 45 ms | 5,7 ms | 10,7 ms |
-| FFT 1024 | 1033 B | 90 ms | 11,2 ms | 21,3 ms |
-| FFT 2048 | 2057 B | 179 ms | 22,3 ms | 42,7 ms |
-| BYPASS 512 | 1033 B | 90 ms | 11,2 ms | 10,7 ms |
+Para que el envío continuo de datos (`c`) funcione en tiempo real sin descartar ventanas por congestión de la UART, la transmisión de cada trama debe completarse antes de que el ADC termine de llenar la siguiente ventana:
 
-A 115200 baudios se descartan varias ventanas por cada una que se envía. Se decidió subir la velocidad; el valor se elige probando en la placa (issue #25).
+$$T_{\text{tx}} \le T_{\text{w}}$$
+
+Donde:
+* $T_{\text{w}} = \frac{N}{F_{\text{s}}}$ es el tiempo que tarda el ADC en adquirir una ventana de $N$ muestras a frecuencia $F_{\text{s}}$. El caso más exigente (ventana más corta con mayor cantidad de datos) ocurre con $N = 2048$ y $F_{\text{s}} = 48\text{ kHz}$:
+  $$T_{\text{w, min}} = \frac{2048}{48000\text{ Hz}} \approx 42,67\text{ ms}$$
+* $T_{\text{tx}} = \frac{\text{Bits totales}}{\text{Baudrate}}$ es el tiempo que tarda la UART en transmitir la trama. Con configuración 8N1 (1 bit de start, 8 de datos, 1 de stop, sin paridad), cada byte transmitido requiere 10 bits en la línea serie.
+
+El tamaño de la trama mínima está dado por:
+* Cabecera: 9 bytes (`Sync(2) + Type(1) + N(2) + Fs(4)`).
+* Carga útil (*payload*):
+  * **Modo FFT:** $L = N / 2$ bins de frecuencia en `int16_t` (2 bytes c/u) $= N$ bytes.
+  * **Modo BYPASS:** $L = N$ muestras temporales en `int16_t` (2 bytes c/u) $= 2N$ bytes.
+
+Para $N = 2048$ en FFT, la trama mide:
+$$\text{Tamaño} = 9\text{ B} + 2048\text{ B} = 2057\text{ bytes} \implies 2057 \times 10 = 20.570\text{ bits}$$
+
+#### Comparación entre velocidades candidatas
+
+Calculando el tiempo de transmisión para el caso crítico ($N = 2048$, $F_{\text{s}} = 48\text{ kHz}$, $T_{\text{w}} \approx 42,67\text{ ms}$):
+
+| Baudrate | Tiempo de transmisión ($T_{\text{tx}}$) | Comparación con $T_{\text{w}}$ (42,7 ms) | Comportamiento |
+| --- | :---: | :---: | --- |
+| **115.200** | $\frac{20.570}{115.200} \approx \mathbf{178,6\text{ ms}}$ | $T_{\text{tx}} \approx 4,18 \times T_{\text{w}}$ | **No cumple.** Descarta entre 3 y 4 ventanas por cada una transmitida. |
+| **460.800** | $\frac{20.570}{460.800} \approx \mathbf{44,6\text{ ms}}$ | $T_{\text{tx}} > T_{\text{w}}$ ($44,6 > 42,7\text{ ms}$) | **No cumple estrictamente.** La trama tarda un poco más que la ventana, descartando 1 de cada 2 ventanas (50% de descarte). |
+| **921.600** | $\frac{20.570}{921.600} \approx \mathbf{22,3\text{ ms}}$ | $T_{\text{tx}} \approx 0,52 \times T_{\text{w}}$ | **Cumple.** Tarda la mitad de la ventana, permitiendo transmitir el 100% de las ventanas sin congestión. |
+
+A continuación se compara el tiempo de transmisión de cada tipo de trama con la duración de la ventana a 48 kHz:
+
+| Trama | Tamaño | A 115200 baudios | A 460800 baudios | A 921600 baudios | Ventana a 48 kHz |
+| --- | --- | :---: | :---: | :---: | :---: |
+| FFT 512 | 521 B (5210 bits) | 45,2 ms | 11,3 ms | 5,7 ms | 10,7 ms |
+| FFT 1024 | 1033 B (10330 bits) | 89,7 ms | 22,4 ms | 11,2 ms | 21,3 ms |
+| FFT 2048 | 2057 B (20570 bits) | 178,6 ms | 44,6 ms | 22,3 ms | 42,7 ms |
+| BYPASS 512 | 1033 B (10330 bits) | 89,7 ms | 22,4 ms | 11,2 ms | 10,7 ms |
+
+*(Nota: En BYPASS 512 a 48 kHz la ventana dura 10,7 ms y la trama a 921600 tarda 11,2 ms, por lo que a esa frecuencia máxima se produce un descarte mínimo de 1 ventana cada ~20 enviadas, pero en todas las configuraciones de FFT se transmite sin pérdidas).*
+
+#### Viabilidad en hardware y error de reloj (FRO 12 MHz)
+
+En el microcontrolador FRDM-MCXN947, el periférico `LPUART4` se alimenta del oscilador interno FRO configurado en 12 MHz (`BOARD_DEBUG_UART_CLK_FREQ = 12000000U`).
+
+El generador de baudrate del LPUART calcula el divisor a partir de la tasa de sobremuestreo ($OSR$, entre 4 y 32) y el divisor $SBR$:
+$$\text{Baudrate} = \frac{F_{\text{src}}}{OSR \times SBR}$$
+
+Para 921.600 baudios con $F_{\text{src}} = 12\text{ MHz}$, el driver optimiza seleccionando $OSR = 13$ y $SBR = 1$:
+$$\text{Baud}_{\text{real}} = \frac{12.000.000}{13 \times 1} \approx 923.076,92\text{ baudios}$$
+
+El error relativo de sincronización es:
+$$\text{Error} = \frac{923.076,92 - 921.600}{921.600} \times 100 \approx \mathbf{+0,16\%}$$
+
+Un error del 0,16% es totalmente despreciable frente al margen admisible de la norma UART ($\approx \pm 2\%$ a $\pm 3\%$), asegurando una comunicación libre de errores con el chip puente USB-VCOM MCU-Link. Por todo esto, **921600 baudios es la velocidad elegida** para el sistema.
 
 ## Decisiones
 
