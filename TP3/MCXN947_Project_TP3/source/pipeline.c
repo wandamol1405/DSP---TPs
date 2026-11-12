@@ -155,12 +155,6 @@ void pipeline_process_block(void) {
     // Etapa 3: el buffer de salida por UART, en binario, si se pidió
     send_output_frame();
 
-    // Streaming muestra a muestra del TP2 ('p'), con la entrada. TODO(TP3): reemplazarlo
-    // por la impresión en texto de s_frame_out (uart_stage_print_samples).
-    for (uint32_t i = 0; i < n; i++) {
-        uart_stage_feed_sample(in[i], in[i]);
-    }
-
     s_frame_busy = false;
 }
 
@@ -241,11 +235,6 @@ void pipeline_set_sample_rate(sample_rate_t rate) {
 // Expone el buffer circular interno (por ejemplo, para que otra etapa lo consulte directamente).
 circular_buffer_t* pipeline_get_circular_buffer(void) {
     return &s_circ_buffer;
-}
-
-// Solicita a la etapa UART que envíe el contenido completo del buffer circular por el puerto serie.
-void pipeline_dump_to_uart(bool format_csv) {
-    uart_stage_dump_buffer(&s_circ_buffer, format_csv);
 }
 
 // Recorre BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS (SW3 y comando 'm').

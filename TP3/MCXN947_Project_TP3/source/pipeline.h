@@ -15,7 +15,7 @@
 #include "adc_stage.h"        // etapa de adquisición (ADC + CTIMER) y sample_rate_t
 #include "processing_stage.h" // etapa de procesamiento DSP
 #include "dac_stage.h"        // etapa de salida analógica (DAC0)
-#include "uart_stage.h"       // etapa de comunicación por UART (streaming y volcado de buffer)
+#include "uart_stage.h"       // etapa de comunicación por UART (tramas binarias y comandos)
 
 // Tamaño del buffer circular interno del pipeline, en muestras (según consigna del TP1).
 #define PIPELINE_BUFFER_SIZE 512
@@ -128,12 +128,6 @@ void pipeline_set_sample_rate(sample_rate_t rate);
  */
 circular_buffer_t* pipeline_get_circular_buffer(void);
 
-
-/**
- * @brief Vuelca el buffer circular por UART para análisis en PC.
- * @param format_csv true para formato CSV, false con índices por línea.
- */
-void pipeline_dump_to_uart(bool format_csv);
 
 /**
  * @brief Avanza al siguiente modo del ciclo BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS

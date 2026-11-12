@@ -25,16 +25,20 @@
 #include "adc_stage.h"        // sample_rate_t y control de la etapa de adquisición
 #include "processing_stage.h" // processing_mode_t y control del modo de procesamiento DSP
 #include "dac_stage.h"        // etapa de salida analógica (incluida por completitud del pipeline)
-#include "uart_stage.h"       // comandos por UART: try_getchar, streaming, is_streaming_enabled
+#include "uart_stage.h"       // comandos por UART, turno de texto y envío de tramas
 #include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
 #include "ui.h"               // interfaz gráfica en el display OLED (independiente del hardware)
 
-/* Flags de notificación para impresión en el loop principal (se setean desde ISRs o
- * desde ProcessUartCommands, y se consumen y limpian en el while(1) de main) */
+/* Avisos pendientes de imprimir. Los levantan las ISRs de los pulsadores y
+ * ProcessUartCommands(), que nunca escriben por la UART: el texto sale después, desde
+ * PrintPendingStatus(), cuando el loop principal consigue el turno entre dos tramas. */
 static volatile bool adc_print_flag = false;      // pide imprimir el estado RUN/STOP
 static volatile bool freq_print_flag = false;     // pide imprimir la frecuencia de muestreo actual
-static volatile bool buffer_dump_flag = false;    // pide volcar el buffer circular por UART
 static volatile bool dsp_mode_print_flag = false; // pide imprimir el modo de procesamiento DSP actual
+static volatile bool stream_print_flag = false;   // pide imprimir si el envío continuo quedó activo
+static volatile bool stats_print_flag = false;    // pide imprimir los contadores de la UART ('t')
+static volatile bool help_print_flag = false;     // pide imprimir la ayuda ('h')
+static volatile bool overrun_print_flag = false;  // pide avisar que se descartó una ventana
 static volatile bool ui_update_flag = false;      // pide sincronizar el estado del DSP hacia la UI
 
 /**
@@ -118,22 +122,24 @@ void SetLedForSampleRate(sample_rate_t rate) {
 }
 
 /**
- * @brief Procesa comandos recibidos por el puerto serie (no bloqueante).
+ * @brief Procesa todos los comandos que llegaron por el puerto serie (no bloqueante).
+ *        Aplica el cambio en el momento y deja el aviso pendiente; no escribe por la UART,
+ *        así que se puede llamar siempre, aunque esté saliendo una trama.
  */
 static void ProcessUartCommands(void) {
   char ch = 0;
-  if (uart_stage_try_getchar(&ch)) {
+  while (uart_stage_try_getchar(&ch)) {
     switch (ch) {
     case 'r':
     case 'R':
-      // Alterna RUN/STOP y pide que se imprima el nuevo estado en el loop principal
+      // Alterna RUN/STOP
       pipeline_toggle_run_stop();
       adc_print_flag = true;
       break;
 
     case 'f':
     case 'F': {
-      // Avanza a la siguiente frecuencia, actualiza el LED y pide imprimir la nueva frecuencia
+      // Avanza a la siguiente frecuencia de muestreo y actualiza el LED (igual que SW2)
       sample_rate_t next = pipeline_next_sample_rate();
       SetLedForSampleRate(next);
       freq_print_flag = true;
@@ -141,97 +147,37 @@ static void ProcessUartCommands(void) {
       break;
     }
 
-    case 'd':
-    case 'D':
-      // Solo levanta la bandera: el volcado real se hace en el loop principal, no en esta función
-      buffer_dump_flag = true;
-      break;
-
-    case 'p':
-    case 'P': {
-      // El modo activo reserva el UART para líneas CSV compatibles con Serial-Oscilloscope.
-      // TODO(TP3): cuando exista una ventana de salida FFT/Bypass real del pipeline
-      // (issues #14/#15), este 'p' pasa a imprimir esa ventana con
-      // uart_stage_print_samples() en vez del streaming muestra-a-muestra de TP2
-      // -- ver el comentario grande en uart_stage.h.
-      bool streaming = !uart_stage_is_streaming_enabled();
-      uart_stage_enable_streaming(streaming);
-      if (!streaming) {
-        PRINTF("[UART] Streaming Serial Plotter: DESACTIVADO\r\n");
-      }
-      break;
-    }
-
-    case 'o':
-    case 'O': {
-      // Alterna el formato de streaming sin imprimir texto que contamine el CSV.
-      uart_stream_mode_t current = uart_stage_get_stream_mode();
-      uart_stream_mode_t next = (current == UART_STREAM_MODE_PLOTTER)
-                                    ? UART_STREAM_MODE_OSCILLOSCOPE
-                                    : UART_STREAM_MODE_PLOTTER;
-      uart_stage_set_stream_mode(next);
-      if (!uart_stage_any_streaming_active()) {
-        PRINTF("[UART] Formato streaming: %s\r\n",
-               next == UART_STREAM_MODE_OSCILLOSCOPE ? "SERIAL-OSCILLOSCOPE" : "PLOTTER");
-      }
-      break;
-    }
-
-    case 'c':
-    case 'C': {
-      // Streaming binario continuo para la GUI (TP3/tools/fft_gui.py, rama de GUI).
-      // Mutuamente excluyente con 'p': uart_stage_enable_binary_streaming() ya se
-      // encarga de apagar el de texto si estaba activo.
-      bool enable = !uart_stage_is_binary_streaming_enabled();
-      uart_stage_enable_binary_streaming(enable);
-      if (!enable) {
-        PRINTF("[UART] Streaming binario: DESACTIVADO\r\n");
-      }
-      break;
-    }
-
-    case 's':
-    case 'S':
-      // Pide una única ventana de salida (FFT o Bypass) en binario, sin activar el modo
-      // continuo. La manda PendSV con la próxima ventana que encuentre la UART libre.
-      uart_stage_request_single_frame();
-      break;
-
-    case 't':
-    case 'T':
-      if (!uart_stage_any_streaming_active()) {
-        PRINTF("[UART] Tramas binarias: %u enviadas, %u descartadas\r\n",
-               (unsigned int)uart_stage_get_frames_sent(), (unsigned int)uart_stage_get_frames_dropped());
-      }
-      break;
-
     case 'm':
-    case 'M': {
+    case 'M':
       // Mismo ciclo que SW3: BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS
       pipeline_next_processing_mode();
       dsp_mode_print_flag = true;
       ui_update_flag = true;
       break;
-    }
+
+    case 'c':
+    case 'C':
+      // Envío continuo de tramas: cada ventana que encuentre la UART libre
+      uart_stage_enable_binary_streaming(!uart_stage_is_binary_streaming_enabled());
+      stream_print_flag = true;
+      break;
+
+    case 's':
+    case 'S':
+      // Pide una única trama, sin activar el envío continuo. La manda PendSV con la
+      // próxima ventana que encuentre la UART libre.
+      uart_stage_request_single_frame();
+      break;
+
+    case 't':
+    case 'T':
+      stats_print_flag = true;
+      break;
 
     case 'h':
     case 'H':
     case '?':
-      // Imprime el menú de ayuda con todos los comandos disponibles
-      if (!uart_stage_any_streaming_active()) {
-        PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
-        PRINTF("  'r': Alternar RUN / STOP\r\n");
-        PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k) [SW2]\r\n");
-        PRINTF("  'd': Volcar las 512 muestras del buffer por UART (formato CSV)\r\n");
-        PRINTF("  'p': Activar/Desactivar streaming de TEXTO (excluyente con 'c')\r\n");
-        PRINTF("  'o': Alternar formato Plotter / Serial-Oscilloscope\r\n");
-        PRINTF("  'm': Cambiar modo: BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 [SW3]\r\n");
-        PRINTF("  'c': Activar/Desactivar streaming BINARIO para la GUI (excluyente con 'p')\r\n");
-        PRINTF("  's': Enviar una unica ventana de salida en BINARIO\r\n");
-        PRINTF("  't': Mostrar tramas binarias enviadas/descartadas\r\n");
-        PRINTF("  'h': Mostrar esta ayuda\r\n");
-        PRINTF("=================================\r\n\r\n");
-      }
+      help_print_flag = true;
       break;
 
     default:
@@ -242,54 +188,83 @@ static void ProcessUartCommands(void) {
 }
 
 /**
- * @brief Imprime los avisos pendientes (estado, Fs, modo, sobrecarga, volcado) que dejaron
- *        las ISRs y los comandos. Llamar solo con el turno de texto de la UART tomado.
+ * @brief Indica si hay algún aviso pendiente de imprimir.
+ */
+static bool HasPendingText(void) {
+  return adc_print_flag || freq_print_flag || dsp_mode_print_flag || stream_print_flag ||
+         stats_print_flag || help_print_flag || overrun_print_flag;
+}
+
+/**
+ * @brief Imprime los avisos pendientes que dejaron las ISRs y los comandos. Llamar solo
+ *        con el turno de texto de la UART tomado. Cada bandera se baja antes de imprimir:
+ *        si una ISR la vuelve a levantar mientras tanto, el aviso sale en la vuelta
+ *        siguiente en lugar de perderse.
  */
 static void PrintPendingStatus(void) {
+  /* Ayuda */
+  if (help_print_flag) {
+    help_print_flag = false;
+    PRINTF("\r\n=== COMANDOS UART DISPONIBLES ===\r\n");
+    PRINTF("  'm': Cambiar modo: BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 [SW3]\r\n");
+    PRINTF("  'f': Cambiar frecuencia de muestreo (8k, 16k, 22k, 44k, 48k) [SW2]\r\n");
+    PRINTF("  'r': Alternar RUN / STOP\r\n");
+    PRINTF("  'c': Activar/Desactivar el envio continuo de tramas\r\n");
+    PRINTF("  's': Enviar una unica trama\r\n");
+    PRINTF("  't': Mostrar el estado y los contadores de la UART\r\n");
+    PRINTF("  'h': Mostrar esta ayuda\r\n");
+    PRINTF("=================================\r\n\r\n");
+  }
+
   /* Estado RUN / STOP */
   if (adc_print_flag) {
-    if (!uart_stage_any_streaming_active()) {
-      if (pipeline_is_running()) {
-        PRINTF("[RUN]: Adquisicion activada\r\n");
-      } else {
-        PRINTF("[STOP]: Adquisicion pausada (reproduciendo buffer en loop)\r\n");
-      }
-    }
     adc_print_flag = false;
+    if (pipeline_is_running()) {
+      PRINTF("[RUN]: Adquisicion activada\r\n");
+    } else {
+      PRINTF("[STOP]: Adquisicion pausada (reproduciendo buffer en loop)\r\n");
+    }
   }
 
   /* Frecuencia de muestreo */
   if (freq_print_flag) {
-    if (!uart_stage_any_streaming_active()) {
-      PRINTF("[INFO] Frecuencia de muestreo: %u Hz\r\n", (unsigned int)pipeline_get_sample_rate_hz());
-    }
     freq_print_flag = false;
-  }
-
-  /* Volcado de buffer solicitado */
-  if (buffer_dump_flag) {
-    if (!uart_stage_any_streaming_active()) {
-      pipeline_dump_to_uart(true);
-    }
-    buffer_dump_flag = false;
-  }
-
-  /* Sobrecarga: se completó una ventana antes de que PendSV terminara con la anterior, y
-   * se descartó (el modo no cambia) */
-  if (pipeline_take_overrun()) {
-    if (!uart_stage_any_streaming_active()) {
-      PRINTF("[DSP] Sobrecarga a %u Hz: ventana descartada (total descartadas: %u)\r\n",
-             (unsigned int)pipeline_get_sample_rate_hz(), (unsigned int)pipeline_get_overrun_count());
-    }
+    PRINTF("[INFO] Frecuencia de muestreo: %u Hz\r\n", (unsigned int)pipeline_get_sample_rate_hz());
   }
 
   /* Modo DSP */
   if (dsp_mode_print_flag) {
-    if (!uart_stage_any_streaming_active()) {
-      PRINTF("[DSP] Modo: %s  N=%u\r\n", pipeline_get_processing_mode_name(),
-             (unsigned int)pipeline_get_fft_size_n());
-    }
     dsp_mode_print_flag = false;
+    PRINTF("[DSP] Modo: %s  N=%u\r\n", pipeline_get_processing_mode_name(),
+           (unsigned int)pipeline_get_fft_size_n());
+  }
+
+  /* Envío continuo */
+  if (stream_print_flag) {
+    stream_print_flag = false;
+    PRINTF("[UART] Envio continuo: %s\r\n",
+           uart_stage_is_binary_streaming_enabled() ? "ACTIVADO" : "DESACTIVADO");
+  }
+
+  /* Sobrecarga: se completó una ventana antes de que PendSV terminara con la anterior, y
+   * se descartó (el modo no cambia) */
+  if (overrun_print_flag) {
+    overrun_print_flag = false;
+    PRINTF("[DSP] Sobrecarga a %u Hz: ventana descartada (total descartadas: %u)\r\n",
+           (unsigned int)pipeline_get_sample_rate_hz(), (unsigned int)pipeline_get_overrun_count());
+  }
+
+  /* Estado y contadores ('t') */
+  if (stats_print_flag) {
+    stats_print_flag = false;
+    PRINTF("[ESTADO] %s  Fs=%u Hz  Modo: %s  N=%u  Envio continuo: %s\r\n",
+           pipeline_is_running() ? "RUN" : "STOP", (unsigned int)pipeline_get_sample_rate_hz(),
+           pipeline_get_processing_mode_name(), (unsigned int)pipeline_get_fft_size_n(),
+           uart_stage_is_binary_streaming_enabled() ? "SI" : "NO");
+    PRINTF("[UART] Tramas: %u enviadas, %u descartadas. Comandos perdidos: %u\r\n",
+           (unsigned int)uart_stage_get_frames_sent(), (unsigned int)uart_stage_get_frames_dropped(),
+           (unsigned int)uart_stage_get_rx_lost());
+    PRINTF("[DSP] Ventanas descartadas por sobrecarga: %u\r\n", (unsigned int)pipeline_get_overrun_count());
   }
 }
 
@@ -305,13 +280,8 @@ int main(void) {
   BOARD_InitDebugConsole();
 #endif
 
-  // Este banner (y el resto de este bloque) no esta guardado por
-  // uart_stage_any_streaming_active() porque corre antes de que exista cualquier
-  // estado de streaming (arranca en false). El unico caso en que molestaria es un
-  // reset de la placa con la GUI ya conectada en modo 'c' -- improbable pero real:
-  // si llega a pasar, el parser de la GUI lo loguea como texto sin romper nada (no
-  // hay forma de que este texto ASCII genere por accidente el sync 0xA5 0x5A), asi
-  // que no es grave, solo ensucia el log hasta la proxima trama binaria.
+  // Este cartel se imprime sin pedir el turno de texto porque corre antes de
+  // pipeline_init(): todavía no hay ninguna trama que pueda salir.
   PRINTF("\r\n========================================\r\n");
   PRINTF("  TP3 DSP - FFT (FRDM-MCXN947)\r\n");
 #if defined(DEBUG)
@@ -339,18 +309,22 @@ int main(void) {
   ui_update_flag = true;
 
   while (1) {
-    /* 1. Todo lo que escribe texto por la UART va en este bloque. Solo corre si no está
-     *    saliendo una trama binaria, y mientras corre PendSV no arranca una nueva: texto y
-     *    trama comparten LPUART4 y se mezclarían los bytes. Si la UART está ocupada, los
-     *    avisos pendientes quedan para la próxima vuelta. */
-    if (uart_stage_try_begin_text()) {
-      uart_stage_task();     // streaming de texto del TP2 ('p')
-      ProcessUartCommands(); // los comandos pueden imprimir (ayuda, contadores)
+    /* 1. Comandos: se atienden en cada vuelta, también mientras sale una trama. Solo
+     *    cambian el estado y dejan avisos pendientes; no escriben por la UART. */
+    ProcessUartCommands();
+    if (pipeline_take_overrun()) {
+      overrun_print_flag = true;
+    }
+
+    /* 2. Texto: sale solo entre dos tramas, porque texto y trama comparten LPUART4 y se
+     *    mezclarían los bytes. Si hay una trama saliendo, el turno queda pedido: no
+     *    arranca otra trama y el texto sale en cuanto termine la actual. */
+    if (HasPendingText() && uart_stage_try_begin_text()) {
       PrintPendingStatus();
       uart_stage_end_text();
     }
 
-    /* 2. Actualización de la interfaz gráfica (OLED): solo fuera de ISR */
+    /* 3. Actualización de la interfaz gráfica (OLED): solo fuera de ISR */
     if (ui_update_flag) {
       ui_update_flag = false;
       UpdateUiFromDsp();

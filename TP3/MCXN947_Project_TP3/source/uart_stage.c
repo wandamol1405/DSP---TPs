@@ -5,29 +5,19 @@
  */
 
 #include "uart_stage.h"        // declaraciones propias
-#include "fsl_debug_console.h" // macro PRINTF, usada para toda la salida por UART
 #include "board.h"             // BOARD_DEBUG_UART_BASEADDR (instancia física de LPUART usada)
-#include "fsl_lpuart.h"        // acceso de bajo nivel al LPUART (lectura directa de RX, sin pasar por PRINTF/GETCHAR)
-#include <stdio.h>             // declara printf(), a la que se mapea la macro PRINTF en esta configuración (SDK_DEBUGCONSOLE=0)
+#include "fsl_lpuart.h"        // driver del LPUART: envío de tramas y recepción de comandos por interrupción
+#include <stddef.h>            // NULL, size_t
 
-static bool s_streaming_enabled = false;      // true si el modo streaming de texto ('p') está activo
-static bool s_binary_streaming_enabled = false; // true si el modo streaming binario ('c') está activo
-static bool s_single_frame_requested = false;   // pedido de una unica ventana ('s'), se consume solo
-static uint32_t s_frames_sent = 0;              // tramas binarias enviadas con exito desde el boot
-static uint32_t s_frames_dropped = 0;           // tramas binarias descartadas (UART ocupada) desde el boot
-static uart_stream_mode_t s_stream_mode = UART_STREAM_MODE_PLOTTER;
-static uint32_t s_decimation = 32;            // enviar 1 de cada N muestras en el streaming
-static uint32_t s_decimation_counter = 0;     // contador de muestras recibidas desde el último envío
-
-static volatile bool s_sample_ready = false;  // true cuando hay un par entrada/salida pendiente de imprimir
-static volatile q15_t s_stream_in = 0;        // última muestra de entrada retenida para streaming
-static volatile q15_t s_stream_out = 0;       // última muestra de salida retenida para streaming
+static bool s_binary_streaming_enabled = false; // true si el envío continuo ('c') está activo
+static bool s_single_frame_requested = false;   // pedido de una única trama ('s'), se consume solo
+static uint32_t s_frames_sent = 0;              // tramas binarias enviadas desde el arranque
+static uint32_t s_frames_dropped = 0;           // tramas binarias descartadas (UART ocupada) desde el arranque
+static volatile uint32_t s_rx_lost = 0;         // bytes de comandos perdidos desde el arranque
 
 // ---------------------------------------------------------------------------
-// Trama binaria (uart_stage_send_frame) -- ver TP3/README.md, "Formato de
-// Trama UART". Protocolo minimo: sync + type + N + Fs + payload, nada mas
-// (sin CRC/seq/peak_bin -- la consigna real solo pide transmitir el buffer
-// y graficarlo, ver discusion en la PR/issue).
+// Trama binaria (uart_stage_send_frame) -- ver TP3/decisiones.md, "Formato de
+// la trama". Protocolo minimo: sync + type + N + Fs + payload, nada mas.
 //
 // Se arma a mano byte a byte (no con un struct + memcpy): un struct con
 // un uint32_t despues de dos campos mas chicos le mete relleno de
@@ -41,21 +31,32 @@ static volatile q15_t s_stream_out = 0;       // última muestra de salida reten
 #define UART_FRAME_MAX_N 2048U
 #define UART_FRAME_MAX_SIZE (UART_FRAME_HEADER_SIZE + 2U * UART_FRAME_MAX_N)
 
-static lpuart_handle_t s_tx_handle;
+// Un solo handle del driver para las dos direcciones: envío de tramas y recepción de
+// comandos. Los dos usan la misma interrupción (LP_FLEXCOMM4).
+static lpuart_handle_t s_uart_handle;
 static volatile bool s_tx_busy = false;
-// true mientras el loop principal escribe texto (PRINTF bloqueante) por la misma UART: en
-// ese lapso no se arranca ninguna trama binaria, para que no se mezclen los bytes.
+// true mientras el loop principal tiene el turno de texto (PRINTF bloqueante) o lo está
+// esperando: en ese lapso no se arranca ninguna trama binaria, para que no se mezclen los
+// bytes y para que el texto no espere más de una trama.
 static volatile bool s_text_busy = false;
 static uint8_t s_tx_buf[UART_FRAME_MAX_SIZE];
 
-// Se dispara por interrupcion (LP_FLEXCOMM4, ya enganchada automaticamente
-// por LPUART_TransferCreateHandle) cuando termina de salir el ultimo byte.
-static void uart_stage_tx_done(LPUART_Type *base, lpuart_handle_t *handle, status_t status, void *userData) {
+// Buffer circular de recepción: lo llena la interrupción del LPUART y lo vacía el loop
+// principal con uart_stage_try_getchar(). Los comandos son de una letra, así que 64 bytes
+// alcanzan para todo lo que pueda llegar mientras el loop principal imprime la ayuda.
+#define UART_RX_RING_SIZE 64U
+static uint8_t s_rx_ring[UART_RX_RING_SIZE];
+
+// Lo llama el driver desde la interrupción del LPUART (LP_FLEXCOMM4): cuando termina de
+// salir el último byte de una trama, y cuando se pierde un byte recibido.
+static void uart_stage_event(LPUART_Type *base, lpuart_handle_t *handle, status_t status, void *userData) {
     (void)base;
     (void)handle;
     (void)userData;
     if (status == kStatus_LPUART_TxIdle) {
         s_tx_busy = false;
+    } else if ((status == kStatus_LPUART_RxRingBufferOverrun) || (status == kStatus_LPUART_RxHardwareOverrun)) {
+        s_rx_lost++;
     }
 }
 
@@ -75,37 +76,27 @@ static void uart_frame_put_u32(uint8_t *buf, uint32_t *offset, uint32_t value) {
     *offset += 4U;
 }
 
-// Deja la etapa UART en su estado inicial: streaming desactivado y decimación por defecto.
+// Deja la etapa UART en su estado inicial y engancha las interrupciones del LPUART.
 void uart_stage_init(void) {
-    s_streaming_enabled = false;
     s_binary_streaming_enabled = false;
     s_single_frame_requested = false;
     s_frames_sent = 0;
     s_frames_dropped = 0;
-    s_stream_mode = UART_STREAM_MODE_PLOTTER;
-    s_decimation = 32;
-    s_decimation_counter = 0;
-    s_sample_ready = false;
+    s_rx_lost = 0;
     s_tx_busy = false;
+    s_text_busy = false;
 
-    // Registra el callback de "fin de transmision" para el modo no bloqueante
-    // de uart_stage_send_frame(). LPUART4 ya quedo inicializado (baudrate,
-    // 8N1) por BOARD_InitDebugConsole() -- esto solo engancha la interrupcion
-    // de TX (LP_FLEXCOMM4, compartida con RX/I2C/SPI del mismo flexcomm) y
-    // la habilita en el NVIC; no reconfigura el periferico.
-    //
-    // TODO(TP3): primera version por interrupcion a proposito (mas facil de
-    // probar). Una vez validado en la placa con una ventana real, evaluar
-    // pasar a EDMA si hace falta mas margen de CPU: lpuart_handle_t ->
-    // lpuart_edma_handle_t, LPUART_TransferCreateHandle -> LPUART_TransferCreateHandleEDMA
-    // (necesita ademas un edma_handle_t + EDMA_CreateHandle para el canal),
-    // LPUART_TransferSendNonBlocking -> LPUART_SendEDMA. uart_stage_send_frame()
-    // y todo lo que depende de s_tx_busy/uart_stage_tx_busy() no cambia.
-    LPUART_TransferCreateHandle((LPUART_Type *)BOARD_DEBUG_UART_BASEADDR, &s_tx_handle, uart_stage_tx_done, NULL);
-}
+    LPUART_Type *base = (LPUART_Type *)BOARD_DEBUG_UART_BASEADDR;
 
-bool uart_stage_tx_busy(void) {
-    return s_tx_busy;
+    // LPUART4 ya quedó inicializado (velocidad, 8N1) por BOARD_InitDebugConsole(). Esto
+    // solo registra el handle del driver, que engancha la interrupción LP_FLEXCOMM4 y la
+    // habilita en el NVIC; no reconfigura el periférico.
+    LPUART_TransferCreateHandle(base, &s_uart_handle, uart_stage_event, NULL);
+
+    // Recepción por interrupción: desde acá cada byte que llega lo guarda el driver en
+    // s_rx_ring, sin depender de que el loop principal lo lea a tiempo. El driver también
+    // limpia la marca de desborde del LPUART, que si queda puesta frena la recepción.
+    LPUART_TransferStartRingBuffer(base, &s_uart_handle, s_rx_ring, sizeof(s_rx_ring));
 }
 
 bool uart_stage_can_send_frame(void) {
@@ -114,35 +105,24 @@ bool uart_stage_can_send_frame(void) {
 
 // Primero se toma el turno y después se mira si hay una trama saliendo: así, si PendSV
 // interrumpe entre las dos líneas, ya ve s_text_busy y no arranca una trama nueva.
+// Si hay una trama saliendo el turno NO se suelta: queda reservado para que no arranque
+// otra trama detrás, y el próximo llamado lo consigue apenas termine la actual.
 bool uart_stage_try_begin_text(void) {
     s_text_busy = true;
-    if (s_tx_busy) {
-        s_text_busy = false;
-        return false;
-    }
-    return true;
+    return !s_tx_busy;
 }
 
 void uart_stage_end_text(void) {
     s_text_busy = false;
 }
 
-// Activa o desactiva el streaming binario ('c'). Mutuamente excluyente con
-// el de texto ('p'): si se prende uno, se apaga el otro aca mismo, no
-// queda en manos del que llama acordarse de hacerlo.
+// Activa o desactiva el envío continuo de tramas ('c').
 void uart_stage_enable_binary_streaming(bool enable) {
     s_binary_streaming_enabled = enable;
-    if (enable) {
-        s_streaming_enabled = false;
-    }
 }
 
 bool uart_stage_is_binary_streaming_enabled(void) {
     return s_binary_streaming_enabled;
-}
-
-bool uart_stage_any_streaming_active(void) {
-    return s_streaming_enabled || s_binary_streaming_enabled;
 }
 
 void uart_stage_request_single_frame(void) {
@@ -161,6 +141,10 @@ uint32_t uart_stage_get_frames_sent(void) {
 
 uint32_t uart_stage_get_frames_dropped(void) {
     return s_frames_dropped;
+}
+
+uint32_t uart_stage_get_rx_lost(void) {
+    return s_rx_lost;
 }
 
 void uart_stage_send_frame(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, const int16_t *payload) {
@@ -194,7 +178,7 @@ void uart_stage_send_frame(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, c
         .data = s_tx_buf,
         .dataSize = offset,
     };
-    status_t status = LPUART_TransferSendNonBlocking((LPUART_Type *)BOARD_DEBUG_UART_BASEADDR, &s_tx_handle, &xfer);
+    status_t status = LPUART_TransferSendNonBlocking((LPUART_Type *)BOARD_DEBUG_UART_BASEADDR, &s_uart_handle, &xfer);
     if (status != kStatus_Success) {
         s_tx_busy = false;  // no se pudo encolar (ver status_t): no dejar trabado el flag
         s_frames_dropped++;
@@ -203,145 +187,28 @@ void uart_stage_send_frame(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, c
     s_frames_sent++;
 }
 
-// Imprime una ventana de salida (FFT o Bypass) como texto plano, una
-// muestra por línea -- para mirar con minicom sin la GUI. Ver comentario
-// largo en el .h: es bloqueante a propósito, el llamador decide cuándo
-// conviene invocarla (nunca desde PendSV).
-void uart_stage_print_samples(uart_frame_type_t type, uint16_t n, uint32_t fs_hz, const int16_t *payload) {
-    if (payload == NULL || n == 0U || n > UART_FRAME_MAX_N) {
-        return;
-    }
-
-    uint16_t length = (type == UART_FRAME_TYPE_FFT) ? (n / 2U) : n;
-    const char *type_name = (type == UART_FRAME_TYPE_FFT) ? "FFT" : "BYPASS";
-
-    PRINTF("\r\n--- %s  N=%u  Fs=%u Hz ---\r\n", type_name, (unsigned int)n, (unsigned int)fs_hz);
-
-    for (uint16_t i = 0; i < length; i++) {
-        if (type == UART_FRAME_TYPE_FFT) {
-            // payload viene en dB x100 (mismo convenio que uart_stage_send_frame):
-            // se separa a mano en parte entera/decimal porque PRINTF_FLOAT_ENABLE=0
-            // en esta build (ver flags del proyecto) -- no hay "%f".
-            int32_t db_x100 = (int32_t)payload[i];
-            bool negative = db_x100 < 0;
-            uint32_t abs_x100 = negative ? (uint32_t)(-db_x100) : (uint32_t)db_x100;
-            PRINTF("%u: %s%u.%02u dB\r\n", (unsigned int)i, negative ? "-" : "",
-                   (unsigned int)(abs_x100 / 100U), (unsigned int)(abs_x100 % 100U));
-        } else {
-            PRINTF("%u: %d\r\n", (unsigned int)i, (int)payload[i]);
-        }
-    }
-
-    PRINTF("--- fin ---\r\n\r\n");
-}
-
-// Activa o desactiva el envío continuo de muestras (comando 'p'). Mutuamente
-// excluyente con el streaming binario ('c'), ver uart_stage_enable_binary_streaming().
-void uart_stage_enable_streaming(bool enable) {
-    s_streaming_enabled = enable;
-    if (enable) {
-        s_binary_streaming_enabled = false;
-    }
-}
-
-// Getter de si el streaming continuo está activo.
-bool uart_stage_is_streaming_enabled(void) {
-    return s_streaming_enabled;
-}
-
-// Cambia entre el formato del plotter del repositorio y Serial-Oscilloscope.
-void uart_stage_set_stream_mode(uart_stream_mode_t mode) {
-    if (mode <= UART_STREAM_MODE_OSCILLOSCOPE) {
-        s_stream_mode = mode;
-    }
-}
-
-// Getter del formato de salida actual.
-uart_stream_mode_t uart_stage_get_stream_mode(void) {
-    return s_stream_mode;
-}
-
-// Cambia cada cuántas muestras se envía un dato por streaming (ignora valores no positivos).
-void uart_stage_set_decimation(uint32_t decimation) {
-    if (decimation > 0) {
-        s_decimation = decimation;
-    }
-}
-
-// Recibe un par entrada/salida del pipeline; si el streaming está activo, cuenta hasta
-// completar el factor de decimación y entonces deja el par listo para que uart_stage_task()
-// lo imprima (evita bloquear el pipeline con un PRINTF en cada muestra).
-void uart_stage_feed_sample(q15_t in_sample, q15_t out_sample) {
-    if (!s_streaming_enabled) {
-        return;
-    }
-
-    s_decimation_counter++;
-    if (s_decimation_counter >= s_decimation) {
-        s_decimation_counter = 0;
-        s_stream_in = in_sample;
-        s_stream_out = out_sample;
-        s_sample_ready = true;
-    }
-}
-
-// Tarea periódica para el loop principal: si hay una muestra pendiente del streaming,
-// la imprime (esto es lo que efectivamente saca los datos por el puerto, fuera de la ISR).
-void uart_stage_task(void) {
-    if (s_streaming_enabled && s_sample_ready) {
-        s_sample_ready = false;
-        if (s_stream_mode == UART_STREAM_MODE_OSCILLOSCOPE) {
-            // Serial-Oscilloscope requiere tres valores separados por dos comas.
-            PRINTF("%d,0,0\r\n", (int)s_stream_out);
-        } else {
-            // Formato usado por la GUI del repositorio: entrada,salida.
-            PRINTF("%d,%d\r\n", (int)s_stream_in, (int)s_stream_out);
-        }
-    }
-}
-
-// Imprime todas las muestras del buffer circular por UART, entre marcadores de
-// inicio/fin, en CSV (16 valores por línea) o una por línea con índice.
-void uart_stage_dump_buffer(circular_buffer_t *cb, bool format_csv) {
-    if (cb == NULL || cb->buffer == NULL) {
-        PRINTF("[UART] Buffer nulo\r\n");
-        return;
-    }
-
-    PRINTF("\r\n--- INICIO BUFFER DUMP (%u muestras) ---\r\n", (unsigned int)cb->capacity);
-
-    if (format_csv) {
-        for (uint32_t i = 0; i < cb->capacity; i++) {
-            PRINTF("%d", (int)cb->buffer[i]);
-            if (i < cb->capacity - 1) {
-                PRINTF(",");
-            }
-            // Retorno de carro cada 16 valores para facilitar lectura
-            if ((i + 1) % 16 == 0) {
-                PRINTF("\r\n");
-            }
-        }
-        PRINTF("\r\n");
-    } else {
-        for (uint32_t i = 0; i < cb->capacity; i++) {
-            PRINTF("[%u]: %d\r\n", (unsigned int)i, (int)cb->buffer[i]);
-        }
-    }
-
-    PRINTF("--- FIN BUFFER DUMP ---\r\n\r\n");
-}
-
-// Lee un byte recibido por UART sin bloquear, accediendo directamente al registro del
-// LPUART (no usa GETCHAR/DbgConsole, así que funciona sin depender de esa configuración).
+// Saca un byte del buffer circular de recepción. LPUART_TransferReceiveNonBlocking() con
+// el buffer circular activo copia lo que ya llegó; se la llama solo si hay al menos un
+// byte, así nunca deja una recepción pendiente.
 bool uart_stage_try_getchar(char *ch) {
     if (ch == NULL) {
         return false;
     }
     LPUART_Type *base = (LPUART_Type *)BOARD_DEBUG_UART_BASEADDR;
-    if ((LPUART_GetStatusFlags(base) & (uint32_t)kLPUART_RxDataRegFullFlag) != 0U) {
-        *ch = (char)LPUART_ReadByte(base);
-        return true;
+    if (LPUART_TransferGetRxRingBufferLength(base, &s_uart_handle) == 0U) {
+        return false;
     }
-    return false;
-}
 
+    uint8_t byte = 0U;
+    size_t received = 0U;
+    lpuart_transfer_t xfer = {
+        .rxData = &byte,
+        .dataSize = 1U,
+    };
+    if ((LPUART_TransferReceiveNonBlocking(base, &s_uart_handle, &xfer, &received) != kStatus_Success) ||
+        (received != 1U)) {
+        return false;
+    }
+    *ch = (char)byte;
+    return true;
+}
