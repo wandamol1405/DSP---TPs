@@ -1,73 +1,117 @@
-# Laboratorio #3: Implementación de la FFT en FRDM-MCXN947
+# TP3 - FFT
 
-## Objetivo
-Implementar la Transformada Rápida de Fourier (FFT) para ventanas de $N \in \{512, 1024, 2048\}$ muestras en la placa de desarrollo **FRDM-MCXN947** (Cortex-M33 con FPU / DSP), analizando el compromiso entre frecuencia de muestreo $f_s$, resolución en frecuencia $\Delta f$, tiempo de ventana $T_w$ y costo computacional.
+Realizar un programa que calcule la Transformada Rápida de Fourier (FFT) sobre buffers de 512, 1024 y 2048 muestras adquiridos con el laboratorio 1, teniendo en cuenta las frecuencias de muestreo de 8, 16, 22, 44 y 48 kHz. Con una de las teclas de la placa de evaluación FRDM-MCXN947 se habilita la FFT o se hace bypass hacia un buffer de salida distinto del buffer de entrada. El resultado se transmite por el puerto serie y el espectro se grafica en la PC. A partir de los resultados se sacan conclusiones sobre la FFT al cambiar la frecuencia de muestreo o el tamaño de la ventana.
 
----
+## Qué hay en esta carpeta
 
-## Estructura del Directorio
+| Ruta | Contenido |
+| --- | --- |
+| `MCXN947_Project_TP3/` | Proyecto de MCUXpresso con el firmware de la placa |
+| `tools/` | Interfaz gráfica en Python para ver el espectro en la PC |
+| `tests/` | Pruebas de la interfaz gráfica y simulador de la placa |
+| `images/` | Capturas y mediciones (todavía vacía) |
+| `decisiones.md` | Arquitectura, formato de la trama y decisiones de diseño |
 
-```text
-TP3/
-├── MCXN947_Project_TP3/       # Proyecto MCUXpresso (Cortex-M33 / SDK)
-│   ├── source/               # Código fuente del firmware
-│   │   ├── MCXN947_Project_TP3.c
-│   │   ├── adc_stage.c / .h
-│   │   ├── pipeline.c / .h
-│   │   ├── processing_stage.c / .h
-│   │   ├── uart_stage.c / .h
-│   │   ├── ui.c / .h
-│   │   └── display_port.c / .h
-│   └── ...
-├── tools/                    # Aplicación de PC para visualización y control
-│   ├── fft_gui.py            # GUI en Python (matplotlib, pyserial)
-│   └── requirements.txt      # Dependencias (pyserial, matplotlib, numpy)
-├── images/                   # Capturas de pantalla, espectros y mediciones
-├── tests/                    # Scripts de prueba y validación matemática
-├── informe.md                # Informe técnico final
-└── README.md
+### Firmware (`MCXN947_Project_TP3/source/`)
+
+| Archivo | Qué hace |
+| --- | --- |
+| `MCXN947_Project_TP3.c` | Programa principal: inicialización, loop principal, comandos por UART y pulsadores |
+| `pipeline.c` / `.h` | Conecta las etapas: arma las ventanas de N muestras y dispara su procesamiento |
+| `adc_stage.c` / `.h` | Adquisición con el ADC a la frecuencia de muestreo elegida |
+| `processing_stage.c` / `.h` | FFT con CMSIS-DSP o bypass, hacia el buffer de salida |
+| `uart_stage.c` / `.h` | Envío del buffer de salida a la PC y recepción de comandos |
+| `dac_stage.c` / `.h` | Salida de la señal de entrada por el DAC, para verla en el osciloscopio |
+| `circular_buffer.c` / `.h` | Buffer circular de muestras de entrada |
+| `ui.c` / `.h`, `display_port.c` / `.h`, `u8g2/` | Pantalla OLED |
+
+### Programas de PC
+
+| Archivo | Qué hace |
+| --- | --- |
+| `tools/fft_gui.py` | Interfaz gráfica: se conecta al puerto serie, grafica el espectro y la señal en el tiempo, y envía comandos a la placa |
+| `tools/requirements.txt` | Dependencias de Python |
+| `tests/fake_board.py` | Simulador de la placa, para probar la interfaz sin hardware |
+| `tests/test_frame_parser.py` | Pruebas del lector de tramas de la interfaz |
+
+## Conexiones
+
+| Función | Conexión |
+| --- | --- |
+| Entrada analógica | ADC1, canal A23, pin P1_23 (J9[23]). La señal va montada sobre una continua de 1,65 V |
+| Salida analógica | DAC0, pin P4_2 (J1[4]), al osciloscopio |
+| Pantalla OLED | SSD1306 por I2C: SDA en P1_8 (J2[18]), SCL en P1_9 (J2[20]), 3,3 V y GND |
+| Puerto serie | USB de depuración de la placa (MCU-Link), 115200 baudios, 8N1 |
+
+## Cómo compilar y cargar el firmware
+
+El proyecto se desarrolló con MCUXpresso IDE 25.6 y el SDK MCXN947 26.06.00.
+
+1. En MCUXpresso, importar la carpeta `MCXN947_Project_TP3/` con *File > Import > Existing Projects into Workspace*.
+2. Compilar el proyecto.
+3. Conectar la placa por el USB de depuración y cargar el programa con la configuración *LinkServer Debug* o *LinkServer Release* que viene en el proyecto.
+
+La configuración de pines, relojes y periféricos se cambia desde las herramientas de MCUXpresso. Los archivos generados no se editan a mano.
+
+## Controles y comandos
+
+Los pulsadores de la placa cambian la frecuencia de muestreo y el modo:
+
+| Pulsador | Función |
+| --- | --- |
+| SW2 | Frecuencia de muestreo: 8, 16, 22, 44 y 48 kHz. El color del LED indica cuál está activa |
+| SW3 | Modo: BYPASS, FFT 512, FFT 1024, FFT 2048 y vuelve a BYPASS |
+
+Los mismos cambios y el resto de las funciones se manejan con comandos de una letra por el puerto serie:
+
+| Comando | Función |
+| --- | --- |
+| `r` | Alterna RUN y STOP de la adquisición |
+| `f` | Pasa a la frecuencia de muestreo siguiente (igual que SW2) |
+| `m` | Pasa al modo siguiente (igual que SW3) |
+| `c` | Activa o desactiva el envío continuo de tramas binarias |
+| `s` | Envía una sola trama binaria |
+| `t` | Muestra cuántas tramas se enviaron y cuántas se descartaron |
+| `d` | Vuelca el buffer circular de entrada en texto |
+| `p` | Activa o desactiva el envío de muestras en texto |
+| `o` | Cambia el formato del envío en texto |
+| `h` | Muestra la ayuda |
+
+Los comandos `d`, `p` y `o` vienen del TP1 y del TP2 y se van a quitar (issue #23).
+
+## Interfaz gráfica
+
+Instalación, desde `TP3/tools/`:
+
+```bash
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
 ```
 
----
+En Linux puede hacer falta instalar además el paquete del sistema `python3-tk`.
 
-## Hoja de Ruta e Issues Relacionadas
+Ejecución:
 
-El desarrollo se organiza según los issues de GitHub:
+```bash
+venv/bin/python3 fft_gui.py
+```
 
-1. **[Issue #14](https://github.com/wandamol1405/DSP---TPs/issues/14) - Base del proyecto y adquisición por ventanas de N muestras**:
-   - Duplicación y renombrado del proyecto a `MCXN947_Project_TP3`.
-   - Adquisición continua por DMA/LPADC + CTIMER a $f_s \in \{8, 16, 22, 44, 48\}\text{ kHz}$.
-   - Manejo de ventanas $N \in \{512, 1024, 2048\}$ con doble buffer (`s_frame_in[2][2048]`) y procesamiento diferido en PendSV.
-   - Conmutación limpia de $f_s$ y $N$ entre ventanas consecutivas.
+Por ahora la interfaz funciona con el simulador y no con la placa: espera una trama con más campos que la que envía el firmware. La adaptación está en la issue #24.
 
-2. **[Issue #15](https://github.com/wandamol1405/DSP---TPs/issues/15) - Implementación de la FFT con CMSIS-DSP y modo Bypass**:
-   - Alternancia entre modo **FFT** y modo **Bypass** (buffer de salida independiente del de entrada).
-   - Cálculo de la FFT en punto fijo $q_{15}$, como el resto del pipeline: remoción de la media, enventanado (Rectangular / Hann, tablas $q_{15}$), `arm_rfft_q15`, magnitud con `arm_cmplx_mag_q15` y búsqueda del pico con `arm_max_q15`. La conversión a dBFS se hace en la PC.
-   - Medición de ciclos de CPU mediante DWT (`CYCCNT`).
+Para probarla con el simulador, en otra terminal:
 
-3. **[Issue #16](https://github.com/wandamol1405/DSP---TPs/issues/16) - Transmisión del resultado por UART**:
-   - Transmisión de tramas binarias (`0xA5 0x5A`) con el buffer de salida (FFT o Bypass).
-   - Envío desacoplado de la última salida disponible para no saturar el canal serie.
+```bash
+venv/bin/python3 ../tests/fake_board.py
+```
 
-4. **[Issue #17](https://github.com/wandamol1405/DSP---TPs/issues/17) - GUI en PC para graficar el espectro y ensayos**:
-   - Interfaz gráfica en Python (`fft_gui.py`) para recepción en tiempo real, calibración de ejes ($t$ en ms, $f$ en Hz/dBFS) y detección de picos.
-   - Ensayos comparativos de variación de $N$ y $f_s$, fuga espectral (*spectral leakage*) y resolución.
+El simulador imprime el puerto que hay que escribir en el campo "Puerto" de la interfaz, por ejemplo `/dev/pts/4`.
 
----
+Para correr las pruebas del lector de tramas:
 
-## Formato de Trama UART (Binario Little-Endian)
+```bash
+venv/bin/python3 ../tests/test_frame_parser.py
+```
 
-Protocolo mínimo: lo que pide la consigna es transmitir el buffer de salida
-(FFT o Bypass) y graficarlo en la PC. No se agregó CRC, número de secuencia
-ni bin de pico transmitido (la GUI lo calcula del lado de la PC) — son
-robustez/telemetría extra que la consigna no pide; si hace falta más
-adelante, se agregan sin romper lo que ya hay (quedan como campos nuevos al
-final de la trama).
+## Más información
 
-| Campo | Tipo | Tamaño | Descripción |
-| :--- | :--- | :--- | :--- |
-| **Sync** | uint16 | 2 B | `0xA5 0x5A` |
-| **Type** | uint8 | 1 B | `0` = FFT (dB × 100), `1` = Bypass ($q_{15}$) |
-| **N** | uint16 | 2 B | Tamaño de ventana ($512, 1024, 2048$) |
-| **Fs (Hz)** | uint32 | 4 B | Frecuencia de muestreo |
-| **Payload** | int16[Length] | $2 \times \text{Length}$ B | Datos de salida. Length = N/2 (FFT) o N (Bypass) — no se transmite, se deriva de Type y N |
+La arquitectura del firmware, el formato de la trama y el porqué de cada decisión están en [decisiones.md](decisiones.md).

@@ -1,4 +1,4 @@
-# TP3 FFT – Decisiones de diseño no especificadas en la consigna
+# TP3 FFT – Arquitectura y decisiones de diseño
 
 La consigna dice qué hay que hacer. Este documento registra cómo lo resolvió el equipo en los puntos que la consigna deja abiertos, y sirve de base para la sección de diseño del informe.
 
@@ -11,7 +11,9 @@ Lo que la consigna sí pide:
 - Transmitir el resultado por el puerto serie y graficar el espectro en la PC.
 - Sacar conclusiones sobre la FFT al cambiar la frecuencia de muestreo o el tamaño de ventana.
 
-Todo lo demás no está especificado: cómo se adquiere la ventana, qué pasa al cambiar Fs o N a mitad de una ventana, el formato de la trama, qué tecla hace qué y en qué modo arranca. Cada decisión indica quién la tomó y en qué rama o archivo quedó.
+Todo lo demás no está especificado: cómo se adquiere la ventana, qué pasa al cambiar Fs o N a mitad de una ventana, el formato de la trama, qué tecla hace qué y en qué modo arranca.
+
+Cada decisión indica dónde quedó en el código y su estado. Las que dicen "Pendiente" ya están tomadas pero todavía no están en el código: el número es la issue donde se implementan.
 
 ## Cómo funciona
 
@@ -31,7 +33,7 @@ Todo lo demás no está especificado: cómo se adquiere la ventana, qué pasa al
 - **PendSV:** procesa la ventana lista mientras la ISR llena la otra.
   - **FFT:** `arm_cfft_q15` y `arm_cmplx_mag_q15`, y después la conversión a dB.
   - **BYPASS:** copia la ventana al buffer de salida sin procesarla.
-- **UART:** PendSV manda el buffer de salida con la trama binaria de Wanda: con `c`, en continuo, cada ventana que encuentre la UART libre; con `s`, una sola. Como salida de texto, por ahora sigue el streaming de muestras del TP2 (`p`).
+- **UART:** PendSV manda el buffer de salida como trama binaria: con `c`, en continuo, cada ventana que encuentre la UART libre; con `s`, una sola.
 - **DAC:** no lo pide la consigna. Se mantiene para ver en el osciloscopio la señal tal como se muestreó y para las fotos de formas de onda.
 
 ### Ping-pong de ventanas
@@ -68,7 +70,7 @@ En el código (`pipeline.c`): `s_frame_in[2][2048]` son A y B, `s_cur` indica en
 | Adquisición | RUN |
 | Fs | 8 kHz (LED rojo) |
 | Modo | BYPASS |
-| N | 1024 (ver Pendientes de decidir) |
+| N | 1024 (pasa a 512 con la issue #26) |
 
 ### SW3: modo y tamaño de ventana
 
@@ -89,7 +91,9 @@ Cada vez que se presiona SW3, o se manda `m` por UART, se avanza un paso del cic
 | 4.ª | BYPASS | 2048 | 2048 muestras q15 |
 | 5.ª | FFT | 512 | 256 bins (y sigue el ciclo) |
 
-En BYPASS se mantiene el N anterior: 1024 al encender y 2048 cuando se vuelve desde FFT 2048. El cambio no es inmediato: la ventana que se está llenando termina con el modo y el N con que empezó, y lo nuevo se aplica desde la ventana siguiente.
+Hoy BYPASS mantiene el N anterior: 1024 al encender y 2048 cuando se vuelve desde FFT 2048. Está decidido que BYPASS use siempre N = 512 (issue #26); cuando se implemente, las filas de BYPASS de esta tabla quedan con 512.
+
+El cambio no es inmediato: la ventana que se está llenando termina con el modo y el N con que empezó, y lo nuevo se aplica desde la ventana siguiente.
 
 ### SW2: frecuencia de muestreo
 
@@ -119,48 +123,136 @@ La resolución en frecuencia es Δf = Fs / N y la duración de la ventana es T =
 
 El espectro muestra los bins de 0 a Fs/2. Una señal por encima de Fs/2 aparece reflejada (aliasing): por ejemplo, un tono de 5 kHz a Fs = 8 kHz se ve en 3 kHz.
 
-## Decisiones de Wanda
+## Formato de la trama
 
-Wanda definió la transmisión por UART y la GUI. Lo de UART ya está integrado en `tp3-base-adquisicion`. La GUI sigue en su rama hasta que se alinee con el protocolo.
+La placa envía el buffer de salida en una trama binaria, little-endian:
 
-| Decisión | Por qué | Dónde |
+| Campo | Tipo | Tamaño | Descripción |
+| --- | --- | --- | --- |
+| Sync | 2 bytes | 2 B | `0xA5 0x5A` |
+| Tipo | uint8 | 1 B | `0` = FFT, `1` = BYPASS |
+| N | uint16 | 2 B | Tamaño de la ventana: 512, 1024 o 2048 |
+| Fs | uint32 | 4 B | Frecuencia de muestreo, en Hz |
+| Datos | int16 × L | 2 × L B | FFT: magnitud en dBFS × 100 de los bins 0 a N/2 − 1 (L = N/2). BYPASS: muestras q15 (L = N) |
+
+La cantidad de datos no se transmite: se deduce del tipo y de N.
+
+### Campos que se evaluaron y no se agregaron
+
+La interfaz gráfica se escribió primero para una trama con más campos. Se revisó cada uno y se decidió dejar la trama mínima y adaptar la interfaz (issue #24):
+
+| Campo | Para qué servía | Por qué no se agrega |
 | --- | --- | --- |
-| Trama binaria mínima: `A5 5A` · tipo (1 B) · N (2 B) · Fs (4 B) · payload, little-endian | La consigna solo pide transmitir el buffer y graficarlo; sin CRC, número de secuencia ni bin de pico | `uart_stage.c`, rama `dev-tp3-uart` |
-| El largo del payload no se transmite: N/2 valores en FFT, N en bypass | Se deriva del tipo y de N | `uart_stage.c` |
-| FFT se transmite como magnitud en dB × 100 (int16); bypass como muestras q15 | Entero de 16 bits con dos decimales, sin floats en la trama | `uart_stage.h` |
-| Envío no bloqueante por interrupción (EDMA queda para después si hace falta) | Más simple de probar primero | `uart_stage.c` |
-| Si la UART sigue ocupada con la trama anterior, la nueva se descarta y se cuenta | No frenar el procesamiento esperando a la UART | `uart_stage_send_frame()` |
-| Comandos nuevos: `c` envío continuo, `s` una sola trama, `t` contadores de tramas | Controlar el envío desde la PC | `MCXN947_Project_TP3.c` |
-| Streaming de texto (`p`) y binario (`c`) son excluyentes; no se imprime texto mientras alguno está activo | Comparten LPUART4 y se mezclarían los bytes | `uart_stage.c` |
-| SW3 recorre BYPASS → FFT 512 → FFT 1024 → FFT 2048 (decisión del equipo registrada por Wanda) | Una sola tecla cubre el bypass y los tres tamaños | TODO en `MCXN947_Project_TP3.c`, implementado por Melisa |
-| GUI en Python (Tkinter + matplotlib) con protocolo extendido: ventana, largo, secuencia, bin de pico y CRC-16 | Validar la trama y detectar tramas perdidas | `TP3/tools/fft_gui.py`, rama `dev-tp3-gui` |
-| La GUI ofrece ventana rectangular o Hann (comando `w`) | Comparar fuga espectral | `fft_gui.py` |
+| Ventana | Indicar si la FFT usó ventana rectangular o Hann | El firmware solo usa la rectangular: valdría siempre lo mismo |
+| Longitud | Saber cuántos datos leer | Se deduce del tipo y de N |
+| Número de secuencia | Contar tramas perdidas | El firmware descarta ventanas a propósito cuando la UART está ocupada y ya lleva ese contador (comando `t`) |
+| Bin del pico | Marcar el pico en el gráfico | La PC lo calcula sobre los datos recibidos |
+| CRC | Descartar tramas corruptas | El enlace es corto y por USB, sin errores de bit en la práctica. Si una trama llega cortada, la interfaz dibuja una ventana mala y se vuelve a sincronizar sola en la siguiente |
 
-## Decisiones de Melisa
+Para no confundir datos con un comienzo de trama, la interfaz comprueba que el tipo, el N y la frecuencia de muestreo de la cabecera sean valores válidos.
 
-Melisa definió cómo se adquiere y procesa cada ventana, y cómo se integra el trabajo de las ramas. Están en `tp3-base-adquisicion`.
+## Comunicación por UART
 
-| Decisión | Por qué | Dónde |
-| --- | --- | --- |
-| Dos buffers de ventana ping-pong de 2048 muestras: la ISR del ADC llena uno mientras PendSV procesa el otro | La ISR no puede bloquearse; el cálculo pesado va en PendSV, con menor prioridad | `pipeline.c` |
-| El cambio de N se aplica recién al empezar la ventana siguiente | Una ventana nunca mezcla muestras de dos N distintos | `pipeline_step()` |
-| Cada ventana guarda con qué Fs, N y modo se tomó, capturados al arrancarla | La trama enviada tiene que llevar los parámetros reales, aunque se toquen mientras se llena | `frame_info_t`, `pipeline.h` |
-| Al cambiar Fs se descarta la ventana a medio llenar | Ninguna ventana mezcla dos frecuencias de muestreo | `pipeline_next_sample_rate()` |
-| Si se completa una ventana mientras PendSV sigue con la anterior, se descarta y se cuenta; el modo no cambia | No hay un tercer buffer libre; el contador muestra cuándo no entra en tiempo real | `pipeline_step()` |
-| El DAC repite la señal de entrada, no la salida | El resultado de la FFT es un espectro, no una señal para el osciloscopio | `pipeline_step()` |
-| SW3 recorre BYPASS → FFT 512 → FFT 1024 → FFT 2048, el mismo ciclo que el comando `m`, con cambio diferido | Seguir la decisión del equipo registrada por Wanda | `pipeline_next_processing_mode()` |
-| Sin ventana Hann en el firmware: solo rectangular | La consigna no la pide | `frame_info_t` sin campo de ventana |
-| La FFT usa `arm_cfft_q15` de CMSIS-DSP con las instancias de 512, 1024 y 2048, y después `arm_cmplx_mag_q15` | Funciones de la biblioteca recomendada; el resultado va a un buffer de salida propio. Se mandan los bins 0 a N/2 − 1 en dBFS × 100: 0 dB es un tono de amplitud máxima para cualquier N, y un bin en 0 vale −100 dB | `processing_stage.c` |
-| Se mide el tiempo de la FFT con el contador de ciclos DWT | Base para las conclusiones: tiempo de cálculo contra duración de la ventana | Pendiente |
-| Firmware con el protocolo mínimo de `dev-tp3-uart`; adaptar la GUI le queda a Wanda | La GUI es de Wanda; el firmware sigue el protocolo más reciente | — |
-| Se integró solo `dev-tp3-uart` a `tp3-base-adquisicion`; `dev-tp3-gui` entra después por su propio PR | La GUI todavía no es compatible con el protocolo del firmware | Merge `7f5cd63` |
-| Se sacó el campo `seq` de `frame_info_t` | No lo usa la trama mínima; si la GUI lo necesita, se vuelve a agregar | `pipeline.h` |
-| La trama binaria se manda desde PendSV, apenas se calcula la ventana: con `c` cada ventana que encuentre la UART libre, con `s` una sola | El buffer de salida se copia a la UART antes de que lo pise la ventana siguiente | `send_output_frame()`, `pipeline.c` |
-| El texto (`PRINTF`) y las tramas binarias se turnan la UART: el texto espera a que termine la trama, y mientras se imprime no arranca ninguna | Comparten LPUART4; si se escriben a la vez se mezclan los bytes y la trama llega rota | `uart_stage_try_begin_text()`, `MCXN947_Project_TP3.c` |
+### Cómo está hoy
 
-## Pendientes de decidir
+- Las tramas binarias salen desde PendSV, sin bloquear, apenas se calcula la ventana.
+- El texto (respuestas a comandos y avisos) sale desde el loop principal con `PRINTF`.
+- Texto y tramas comparten LPUART4 y se turnan: el texto espera a que termine la trama, y mientras se imprime texto no arranca ninguna trama.
+- Los comandos se leen consultando la UART, y solo cuando el loop principal consigue el turno de texto.
+- Además de las tramas quedan tres salidas de texto heredadas del TP1 y del TP2: el envío muestra a muestra (`p`), su cambio de formato (`o`) y el volcado del buffer circular (`d`).
 
-- [ ] Estado inicial y N del bypass. Hoy arranca en BYPASS con N = 1024 y, al volver de FFT 2048, el bypass queda en 2048. Propuesta: BYPASS siempre con N = 512, el caso que nombra la consigna y el tamaño del buffer del Laboratorio #1. Por ahora queda como está; se consulta al profesor por mail junto con el uso del DAC.
-- [ ] Alinear la GUI con la trama mínima del firmware, o extender la trama con lo que espera la GUI (Wanda).
-- [ ] Adaptar el OLED: todavía muestra la pantalla de filtros del TP2 y en modo FFT dice lo mismo que en BYPASS.
-- [ ] Baudrate: a 115200 una trama FFT de 2048 tarda cerca de 180 ms en salir, así que con Fs alta se descartan varias ventanas. Subirlo se configura desde MCUXpresso.
+### Problema
+
+Con el envío continuo activo, la UART está casi siempre transmitiendo: a 115200 baudios una trama de FFT de 2048 puntos tarda cerca de 180 ms. Mientras tanto el loop principal no consigue el turno y no lee los comandos. Los bytes recibidos se acumulan hasta desbordar, la UART marca el error de desborde y, mientras esa marca siga puesta, no guarda ningún byte nuevo: la placa deja de responder.
+
+### Cómo queda (issue #23)
+
+```
+ loop principal: respuestas de texto ───────────────────────────► LPUART4 TX ──► PC
+        ▲            (solo entre dos tramas)                          ▲
+        │                                                             │
+        │                              PendSV: trama binaria ─────────┘
+        │
+ comandos ◄── buffer circular de recepción ◄── LPUART4 RX (interrupción) ◄── PC
+```
+
+- **Recepción por interrupción:** cada byte recibido se guarda en un buffer circular, aunque esté saliendo una trama. El loop principal procesa los comandos en cada vuelta.
+- **Una sola salida de datos:** las tramas binarias, en continuo (`c`) o de a una (`s`). El texto queda solo para las respuestas a comandos y los avisos.
+- **Texto entre tramas:** las respuestas salen entre dos tramas, también con el envío continuo activo. La interfaz gráfica separa el texto de las tramas en el mismo flujo de bytes.
+- **Comandos que quedan:** `m`, `f`, `r`, `c`, `s`, `t` y `h`.
+
+### Velocidad del puerto
+
+Cuánto tarda en salir una trama, contra lo que dura la ventana más corta de ese tamaño (a 48 kHz):
+
+| Trama | Tamaño | A 115200 baudios | A 921600 baudios | Ventana a 48 kHz |
+| --- | --- | --- | --- | --- |
+| FFT 512 | 521 B | 45 ms | 5,7 ms | 10,7 ms |
+| FFT 1024 | 1033 B | 90 ms | 11,2 ms | 21,3 ms |
+| FFT 2048 | 2057 B | 179 ms | 22,3 ms | 42,7 ms |
+| BYPASS 512 | 1033 B | 90 ms | 11,2 ms | 10,7 ms |
+
+A 115200 baudios se descartan varias ventanas por cada una que se envía. Se decidió subir la velocidad; el valor se elige probando en la placa (issue #25).
+
+## Decisiones
+
+### Adquisición y ventanas
+
+| Decisión | Por qué | Dónde | Estado |
+| --- | --- | --- | --- |
+| Dos buffers de ventana ping-pong de 2048 muestras: la ISR del ADC llena uno mientras PendSV procesa el otro | La ISR no puede bloquearse; el cálculo pesado va en PendSV, con menor prioridad | `pipeline.c` | Implementado |
+| El cambio de N y de modo se aplica recién al empezar la ventana siguiente | Una ventana nunca mezcla muestras de dos N distintos | `pipeline_step()` | Implementado |
+| Cada ventana guarda con qué Fs, N y modo se tomó, capturados al arrancarla | La trama enviada tiene que llevar los parámetros reales, aunque se toquen mientras se llena | `frame_info_t`, `pipeline.h` | Implementado |
+| Al cambiar Fs se descarta la ventana a medio llenar | Ninguna ventana mezcla dos frecuencias de muestreo | `pipeline_next_sample_rate()` | Implementado |
+| Si se completa una ventana mientras PendSV sigue con la anterior, se descarta y se cuenta; el modo no cambia | No hay un tercer buffer libre; el contador muestra cuándo no entra en tiempo real | `pipeline_step()` | Implementado |
+| El DAC repite la señal de entrada, no la salida | El resultado de la FFT es un espectro, no una señal para el osciloscopio | `pipeline_step()` | Implementado |
+
+### Modos y FFT
+
+| Decisión | Por qué | Dónde | Estado |
+| --- | --- | --- | --- |
+| SW3 y el comando `m` recorren BYPASS → FFT 512 → FFT 1024 → FFT 2048 | Una sola tecla cubre el bypass y los tres tamaños | `pipeline_next_processing_mode()` | Implementado |
+| BYPASS usa siempre N = 512 | Es el tamaño del buffer del Laboratorio #1, y el N de BYPASS no tiene que depender de qué FFT se usó antes | `pipeline.c` | Pendiente (#26) |
+| La FFT usa `arm_cfft_q15` de CMSIS-DSP con las instancias de 512, 1024 y 2048, y después `arm_cmplx_mag_q15` | Funciones de la biblioteca recomendada; el resultado va a un buffer de salida propio | `processing_stage.c` | Implementado |
+| Se mandan los bins 0 a N/2 − 1 en dBFS × 100 | 0 dB es un tono de amplitud máxima para cualquier N, y un bin en 0 vale −100 dB. Entero de 16 bits con dos decimales, sin floats en la trama | `processing_stage.c` | Implementado |
+| Sin ventana Hann ni remoción de la media en el firmware: solo ventana rectangular | La consigna no las pide. El efecto de la ventana se muestra en un cuaderno de Jupyter con señales simuladas | — | Cuaderno pendiente (#28) |
+| El firmware busca el bin de mayor magnitud, sin contar el de continua, y muestra su frecuencia en el OLED | Es el resultado de la FFT que se puede leer en la placa sin la PC. No se agrega a la trama | `processing_stage.c`, `ui.c` | Pendiente (#27) |
+| El OLED muestra Fs, modo, N, resolución en frecuencia y frecuencia del pico | Representa el estado del sistema. Hoy muestra la pantalla de filtros del TP2 | `ui.c` | Pendiente (#27) |
+| Se mide cuánto tarda el procesador en calcular la FFT para cada N | Compararlo con la duración de la ventana (ver abajo) | `pipeline.c` | Pendiente (#30) |
+
+**Sobre la medición del tiempo de cálculo.** Hay dos tiempos distintos. La duración de la ventana, T = N/Fs, es lo que tarda el ADC en juntar las N muestras y se calcula. El tiempo de cálculo es lo que tarda el procesador en ejecutar la FFT sobre la ventana ya completa: depende de N y del procesador, no de Fs, y hay que medirlo. Si el cálculo tarda menos que la ventana, la placa procesa todas las ventanas.
+
+Para medirlo se usa un contador que trae el procesador y que suma uno por cada ciclo de su reloj. Se lee antes y después de la FFT y se restan los dos valores. Como el reloj es de 150 MHz, dividir esa diferencia por 150 millones da el tiempo en segundos. En el código ese contador es el registro `CYCCNT`, de un bloque de depuración del procesador llamado DWT.
+
+### UART y trama
+
+| Decisión | Por qué | Dónde | Estado |
+| --- | --- | --- | --- |
+| Trama binaria mínima: `A5 5A`, tipo, N, Fs y datos | La consigna solo pide transmitir el buffer y graficarlo (ver "Formato de la trama") | `uart_stage.c` | Implementado |
+| Envío de la trama sin bloquear, por interrupción | No frenar el procesamiento esperando a la UART | `uart_stage_send_frame()` | Implementado |
+| Si la UART sigue ocupada con la trama anterior, la nueva se descarta y se cuenta | Ídem; el comando `t` muestra los contadores | `uart_stage_send_frame()` | Implementado |
+| La trama se manda desde PendSV, apenas se calcula la ventana | El buffer de salida se copia a la UART antes de que lo pise la ventana siguiente | `send_output_frame()`, `pipeline.c` | Implementado |
+| El texto y las tramas se turnan la UART | Comparten LPUART4; si se escriben a la vez se mezclan los bytes y la trama llega rota | `uart_stage_try_begin_text()` | Implementado |
+| Los comandos se reciben por interrupción y se procesan siempre | Que la placa responda aunque esté enviando tramas | `uart_stage.c` | Pendiente (#23) |
+| Una sola salida de datos: se quitan `p`, `o` y `d` | Eran salidas del TP1 y del TP2 para otros programas de PC; con la trama binaria y la interfaz gráfica no hacen falta | `uart_stage.c`, `MCXN947_Project_TP3.c` | Pendiente (#23) |
+| Las respuestas de texto salen entre tramas, también con el envío continuo | Poder consultar el estado sin cortar el envío | `MCXN947_Project_TP3.c` | Pendiente (#23) |
+| Se sube la velocidad del puerto serie | A 115200 baudios se descartan muchas ventanas | Configuración desde MCUXpresso | Pendiente (#25) |
+
+### Programas de PC
+
+| Decisión | Por qué | Dónde | Estado |
+| --- | --- | --- | --- |
+| Interfaz gráfica en Python con Tkinter y matplotlib | Graficar el espectro y la señal en el tiempo, y enviar comandos | `tools/fft_gui.py` | Implementado |
+| La interfaz se adapta a la trama mínima y a los comandos del firmware | Hoy espera una trama con más campos y tiene botones para comandos que no existen | `tools/fft_gui.py`, `tests/` | Pendiente (#24) |
+| Simulador de la placa para probar la interfaz sin hardware | Desarrollar la interfaz y el firmware por separado | `tests/fake_board.py` | Implementado |
+
+### Proyecto de señal interna
+
+Para probar la placa sin generador de señales se va a mantener un proyecto de MCUXpresso aparte, copia del original, que agrega un generador de tono interno (issue #29). Tiene tres fuentes: el ADC, un lazo del DAC al ADC por cable y una señal sintética escrita directo en la ventana. Usa la misma trama y los mismos comandos, así que funciona con la misma interfaz gráfica. El proyecto original no cambia.
+
+La versión de prueba está en la rama `tp3-ejemplo-senal-interna`.
+
+## Sin decidir
+
+- Buffer circular de entrada y reproducción por el DAC en STOP, heredados del TP1: no se definió si se mantienen.
+- Uso del DAC: la consigna no lo pide. Quedó pendiente consultarlo con el profesor.
