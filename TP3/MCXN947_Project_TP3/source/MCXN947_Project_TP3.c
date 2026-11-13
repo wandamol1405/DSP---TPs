@@ -28,6 +28,7 @@
 #include "uart_stage.h"       // comandos por UART, turno de texto y envío de tramas
 #include "pipeline.h"         // coordinador que conecta todas las etapas (init, step, control RUN/STOP/frecuencia)
 #include "ui.h"               // interfaz gráfica en el display OLED (independiente del hardware)
+#include "signal_gen.h"       // generador de señal interna configurable (fuente, forma, frecuencia)
 
 /* Avisos pendientes de imprimir. Los levantan las ISRs de los pulsadores y
  * ProcessUartCommands(), que nunca escriben por la UART: el texto sale después, desde
@@ -40,6 +41,7 @@ static volatile bool stats_print_flag = false;    // pide imprimir los contadore
 static volatile bool help_print_flag = false;     // pide imprimir la ayuda ('h')
 static volatile bool overrun_print_flag = false;  // pide avisar que se descartó una ventana
 static volatile bool ui_update_flag = false;      // pide sincronizar el estado del DSP hacia la UI
+static volatile bool siggen_print_flag = false;   // pide imprimir fuente, forma de onda y frecuencia del generador
 
 /**
  * @brief Publica en la UI el estado actual del pipeline DSP (modo, N, Fs y pico).
@@ -107,8 +109,35 @@ void SetLedForSampleRate(sample_rate_t rate) {
  *        así que se puede llamar siempre, aunque esté saliendo una trama.
  */
 static void ProcessUartCommands(void) {
+  static uint32_t s_freq_input = 0U;
+  static bool s_freq_input_active = false;
   char ch = 0;
   while (uart_stage_try_getchar(&ch)) {
+    if ((ch >= '0') && (ch <= '9')) {
+      if (s_freq_input <= 100000U) {
+        s_freq_input = s_freq_input * 10U + (uint32_t)(ch - '0');
+      }
+      s_freq_input_active = true;
+      continue;
+    }
+
+    if ((ch == '\r') || (ch == '\n')) {
+      if (s_freq_input_active) {
+        if (s_freq_input > 0U) {
+          pipeline_set_signal_freq_hz(s_freq_input);
+          siggen_print_flag = true;
+        }
+        s_freq_input = 0U;
+        s_freq_input_active = false;
+      }
+      continue;
+    }
+
+    if (s_freq_input_active) {
+      s_freq_input = 0U;
+      s_freq_input_active = false;
+    }
+
     switch (ch) {
     case 'r':
     case 'R':
@@ -149,6 +178,51 @@ static void ProcessUartCommands(void) {
       uart_stage_request_single_frame();
       break;
 
+    case 'g':
+    case 'G':
+      // Fuente de la señal: ADC -> DAC LOOPBACK -> SINTETICA -> ADC
+      pipeline_next_signal_source();
+      siggen_print_flag = true;
+      break;
+
+    case 'k':
+    case 'K':
+      // Forma de onda del generador interno: SENO -> CUADRADA -> TRIANGULAR -> SIERRA
+      pipeline_next_signal_waveform();
+      siggen_print_flag = true;
+      break;
+
+    case 'w':
+    case 'W':
+      // Tono predefinido del generador interno (250, 1000, 1004, 3000, 5000 Hz)
+      pipeline_next_signal_tone();
+      siggen_print_flag = true;
+      break;
+
+    case '+':
+    case '=':
+      pipeline_step_signal_freq_hz(1);
+      siggen_print_flag = true;
+      break;
+
+    case '-':
+    case '_':
+      pipeline_step_signal_freq_hz(-1);
+      siggen_print_flag = true;
+      break;
+
+    case ']':
+    case '}':
+      pipeline_step_signal_freq_hz(10);
+      siggen_print_flag = true;
+      break;
+
+    case '[':
+    case '{':
+      pipeline_step_signal_freq_hz(-10);
+      siggen_print_flag = true;
+      break;
+
     case 't':
     case 'T':
       stats_print_flag = true;
@@ -172,7 +246,7 @@ static void ProcessUartCommands(void) {
  */
 static bool HasPendingText(void) {
   return adc_print_flag || freq_print_flag || dsp_mode_print_flag || stream_print_flag ||
-         stats_print_flag || help_print_flag || overrun_print_flag;
+         stats_print_flag || help_print_flag || overrun_print_flag || siggen_print_flag;
 }
 
 /**
@@ -191,6 +265,11 @@ static void PrintPendingStatus(void) {
     PRINTF("  'r': Alternar RUN / STOP\r\n");
     PRINTF("  'c': Activar/Desactivar el envio continuo de tramas\r\n");
     PRINTF("  's': Enviar una unica trama\r\n");
+    PRINTF("  'g': Fuente de senal: ADC -> DAC LOOPBACK -> SINTETICA\r\n");
+    PRINTF("  'k': Forma de onda interna: SENO -> CUADRADA -> TRIANGULAR -> SIERRA\r\n");
+    PRINTF("  'w': Preset de frecuencia (250 / 1000 / 1004 / 3000 / 5000 Hz)\r\n");
+    PRINTF("  '+' / '-': Ajustar frecuencia +1 / -1 Hz ('[' / ']' para -10 / +10 Hz)\r\n");
+    PRINTF("  '<Hz>+Enter': Fijar frecuencia arbitraria (1 .. 50000 Hz)\r\n");
     PRINTF("  't': Mostrar el estado y los contadores de la UART\r\n");
     PRINTF("  'h': Mostrar esta ayuda\r\n");
     PRINTF("=================================\r\n\r\n");
@@ -245,6 +324,19 @@ static void PrintPendingStatus(void) {
            (unsigned int)uart_stage_get_frames_sent(), (unsigned int)uart_stage_get_frames_dropped(),
            (unsigned int)uart_stage_get_rx_lost());
     PRINTF("[DSP] Ventanas descartadas por sobrecarga: %u\r\n", (unsigned int)pipeline_get_overrun_count());
+    PRINTF("[SIG] Fuente: %s  Onda: %s  Frecuencia: %u Hz\r\n",
+           signal_gen_get_source_name(signal_gen_get_source()),
+           signal_gen_get_waveform_name(signal_gen_get_waveform()),
+           (unsigned int)signal_gen_get_freq_hz());
+  }
+
+  /* Generador de señal interna */
+  if (siggen_print_flag) {
+    siggen_print_flag = false;
+    PRINTF("[SIG] Fuente: %s  Onda: %s  Frecuencia: %u Hz\r\n",
+           signal_gen_get_source_name(signal_gen_get_source()),
+           signal_gen_get_waveform_name(signal_gen_get_waveform()),
+           (unsigned int)signal_gen_get_freq_hz());
   }
 }
 

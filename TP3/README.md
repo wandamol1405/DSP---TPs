@@ -10,8 +10,9 @@ Realizar un programa que calcule la Transformada Rápida de Fourier (FFT) sobre 
 | `tools/` | Interfaz gráfica en Python para ver el espectro en la PC |
 | `tests/` | Pruebas de la interfaz gráfica y simulador de la placa |
 | `notebooks/` | Cuaderno de Jupyter sobre ventanas y fenómenos de la FFT |
-| `images/` | Capturas y mediciones (todavía vacía) |
+| `images/` | Capturas y mediciones (incluye `ejemplo_senal_interna/`) |
 | `decisiones.md` | Arquitectura, formato de la trama y decisiones de diseño |
+| `ejemplo_senal_interna.md` | Ensayos y capturas de referencia usando el generador interno |
 
 ### Firmware (`MCXN947_Project_TP3/source/`)
 
@@ -23,6 +24,7 @@ Realizar un programa que calcule la Transformada Rápida de Fourier (FFT) sobre 
 | `processing_stage.c` / `.h` | FFT con CMSIS-DSP o bypass, hacia el buffer de salida |
 | `uart_stage.c` / `.h` | Envío del buffer de salida a la PC y recepción de comandos |
 | `dac_stage.c` / `.h` | Salida de la señal de entrada por el DAC, para verla en el osciloscopio |
+| `signal_gen.c` / `.h` | Generador interno configurable (fuente, forma de onda y frecuencia por DDS) |
 | `circular_buffer.c` / `.h` | Buffer circular de muestras de entrada |
 | `ui.c` / `.h`, `display_port.c` / `.h`, `u8g2/` | Pantalla OLED |
 
@@ -72,6 +74,11 @@ Los mismos cambios y el resto de las funciones se manejan con comandos de una le
 | `r` | Alterna RUN y STOP de la adquisición |
 | `c` | Activa o desactiva el envío continuo de tramas |
 | `s` | Envía una sola trama |
+| `g` | Cambia la fuente de señal: ADC -> DAC LOOPBACK (`J1[4] -> J9[23]`) -> SINTETICA |
+| `k` | Cambia la forma de onda del generador interno: SENO -> CUADRADA -> TRIANGULAR -> SIERRA |
+| `w` | Recorre presets de frecuencia del generador (`250, 1000, 1004, 3000, 5000 Hz`) |
+| `+` / `-` | Ajusta la frecuencia del generador en `+1` / `-1 Hz` (`[` / `]` para `-10` / `+10 Hz`) |
+| `<Hz>+Enter` | Fija una frecuencia arbitraria para el generador (`1 .. 50000 Hz`) |
 | `t` | Muestra el estado y los contadores: tramas enviadas y descartadas, comandos perdidos y ventanas descartadas |
 | `h` | Muestra la ayuda |
 
@@ -94,7 +101,7 @@ Ejecución:
 venv/bin/python3 fft_gui.py
 ```
 
-La interfaz decodifica la trama mínima del firmware y envía los comandos soportados por la placa (`m`, `f`, `r`, `c`, `s`, `t`, `h`).
+La interfaz decodifica la trama mínima del firmware y envía los comandos soportados por la placa (`m`, `f`, `r`, `c`, `s`, `t`, `h` y los controles del generador interno `g`, `k`, `w`, `+`/`-`, `[`/`]`, `<Hz>`).
 
 Para probarla con el simulador, en otra terminal:
 
@@ -123,4 +130,4 @@ venv/bin/jupyter notebook ../notebooks/fft_ventanas_y_fenomenos.ipynb
 
 ## Más información
 
-La arquitectura del firmware, el formato de la trama y el porqué de cada decisión están en [decisiones.md](decisiones.md).
+La arquitectura del firmware, el formato de la trama y el porqué de cada decisión están en [decisiones.md](decisiones.md). Los ensayos de referencia sin generador externo están documentados en [ejemplo_senal_interna.md](ejemplo_senal_interna.md).
