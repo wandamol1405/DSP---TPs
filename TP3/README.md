@@ -42,7 +42,7 @@ Realizar un programa que calcule la Transformada Rápida de Fourier (FFT) sobre 
 | Entrada analógica | ADC1, canal A23, pin P1_23 (J9[23]). La señal va montada sobre una continua de 1,65 V |
 | Salida analógica | DAC0, pin P4_2 (J1[4]), al osciloscopio |
 | Pantalla OLED | SSD1306 por I2C: SDA en P1_8 (J2[18]), SCL en P1_9 (J2[20]), 3,3 V y GND |
-| Puerto serie | USB de depuración de la placa (MCU-Link), 115200 baudios, 8N1 |
+| Puerto serie | USB de depuración de la placa (MCU-Link), 921600 baudios, 8N1 |
 
 ## Cómo compilar y cargar el firmware
 
