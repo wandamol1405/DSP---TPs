@@ -10,6 +10,8 @@ Cada carpeta corresponde a un trabajo practico (TP) de la materia:
 
 - TP2: Filtro FIR con FRDM-MCXN947
 
+- TP3: FFT con MCXN947
+
 ## Objetivo
 
 El objetivo de este repositorio es documentar y centralizar los ejercicios prácticos y experimentos realizados durante la cursada, con el fin de:
