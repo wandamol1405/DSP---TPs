@@ -298,8 +298,11 @@ class SerialWorker:
         self._ser = None
 
     def send_char(self, ch: str):
+        self.send_text(ch)
+
+    def send_text(self, text: str):
         if self.is_open:
-            self._ser.write(ch.encode("ascii", errors="ignore"))
+            self._ser.write(text.encode("ascii", errors="ignore"))
 
     def _read_loop(self):
         while not self._stop_event.is_set():
@@ -430,6 +433,35 @@ class FftGuiApp(tk.Tk):
         ttk.Checkbutton(graph_ctrl, text="Max-Hold", variable=self._max_hold_enabled, command=self._on_max_hold_toggle).pack(side=tk.LEFT, padx=5)
         ttk.Button(graph_ctrl, text="Reset Max", command=self._reset_max_hold).pack(side=tk.LEFT, padx=3)
 
+        # --- Barra del Generador de Señal Interna (UART) ---
+        sig_frame = ttk.LabelFrame(self, text="Generador de Señal Interna (UART)", padding=(8, 4))
+        sig_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(0, 4))
+
+        ttk.Button(sig_frame, text="Fuente (g)", command=lambda: self._send("g")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sig_frame, text="Onda (k)", command=lambda: self._send("k")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sig_frame, text="Preset (w)", command=lambda: self._send("w")).pack(side=tk.LEFT, padx=(2, 8))
+
+        ttk.Button(sig_frame, text="-10 Hz ([)", command=lambda: self._send("[")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sig_frame, text="-1 Hz (-)", command=lambda: self._send("-")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sig_frame, text="+1 Hz (+)", command=lambda: self._send("+")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sig_frame, text="+10 Hz (])", command=lambda: self._send("]")).pack(side=tk.LEFT, padx=(2, 8))
+
+        ttk.Label(sig_frame, text="Hz:").pack(side=tk.LEFT, padx=(0, 3))
+        self._sig_freq_var = tk.StringVar(value="1000")
+        self._sig_freq_entry = ttk.Entry(sig_frame, textvariable=self._sig_freq_var, width=7)
+        self._sig_freq_entry.pack(side=tk.LEFT, padx=(0, 4))
+        self._sig_freq_entry.bind("<Return>", lambda _e: self._send_custom_freq())
+        self._sig_freq_entry.bind("<Escape>", lambda _e: self.focus_set())
+        ttk.Button(sig_frame, text="Fijar Hz", command=self._send_custom_freq).pack(side=tk.LEFT, padx=2)
+
+        self._siggen_status_var = tk.StringVar(value="Fuente: ADC | Onda: SENO | 1000 Hz")
+        ttk.Label(
+            sig_frame,
+            textvariable=self._siggen_status_var,
+            foreground=DARK_ACCENT,
+            font=("TkDefaultFont", 9, "bold"),
+        ).pack(side=tk.RIGHT, padx=(10, 4))
+
         # --- Panel de Estado (Tarjetas KPI) ---
         self._build_info_panel()
 
@@ -507,6 +539,7 @@ class FftGuiApp(tk.Tk):
         self._fft_fig.tight_layout()
         self._fft_canvas = FigureCanvasTkAgg(self._fft_fig, master=tab)
         self._fft_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._fft_canvas.get_tk_widget().bind("<Button-1>", lambda _e: self.focus_set())
 
         # Hover de cursor
         bottom_bar = ttk.Frame(tab, padding=(8, 2))
@@ -548,6 +581,7 @@ class FftGuiApp(tk.Tk):
         self._bypass_fig.tight_layout()
         self._bypass_canvas = FigureCanvasTkAgg(self._bypass_fig, master=tab)
         self._bypass_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._bypass_canvas.get_tk_widget().bind("<Button-1>", lambda _e: self.focus_set())
 
     def _build_log_tab(self, notebook):
         tab = ttk.Frame(notebook)
@@ -581,6 +615,7 @@ class FftGuiApp(tk.Tk):
 
         # Tags con colores
         self._log_text.tag_configure("estado", foreground="#38bdf8", font=("TkFixedFont", 9, "bold"))
+        self._log_text.tag_configure("sig", foreground="#a78bfa", font=("TkFixedFont", 9, "bold"))
         self._log_text.tag_configure("info", foreground="#4ade80")
         self._log_text.tag_configure("warn", foreground="#fbbf24")
         self._log_text.tag_configure("error", foreground="#f87171", font=("TkFixedFont", 9, "bold"))
@@ -633,6 +668,22 @@ class FftGuiApp(tk.Tk):
             return
         self._worker.send_char(ch)
 
+    def _send_custom_freq(self):
+        raw = self._sig_freq_var.get().strip()
+        try:
+            freq = int(raw)
+        except ValueError:
+            messagebox.showwarning("Frecuencia inválida", "Ingresá un número entero en Hz (1 a 50000).")
+            return
+        if not (1 <= freq <= 50000):
+            messagebox.showwarning("Frecuencia fuera de rango", "La frecuencia debe estar entre 1 y 50000 Hz.")
+            return
+        if not self._worker.is_open:
+            messagebox.showwarning("Sin conexión", "Conectate a un puerto serie primero.")
+            return
+        self._worker.send_text(f"{freq}\n")
+        self.focus_set()
+
     def _on_close(self):
         self._worker.disconnect()
         self.destroy()
@@ -662,7 +713,8 @@ class FftGuiApp(tk.Tk):
         if isinstance(event.widget, (ttk.Combobox, ttk.Entry, tk.Entry, tk.Text)):
             return
         ch = event.char.lower()
-        if ch in COMMANDS.values():
+        hotkeys = set(COMMANDS.values()) | {"g", "k", "w", "+", "-", "[", "]"}
+        if ch in hotkeys:
             self._send(ch)
         elif event.keysym == "space":
             self._toggle_pause()
@@ -703,7 +755,15 @@ class FftGuiApp(tk.Tk):
 
     def _log(self, line: str):
         tag = "normal"
-        if "[ESTADO]" in line:
+        if "[SIG]" in line:
+            tag = "sig"
+            sig_summary = line.split("[SIG]", 1)[1].strip()
+            self._siggen_status_var.set(sig_summary)
+            if self.focus_get() is not self._sig_freq_entry and "Frecuencia:" in sig_summary:
+                freq_part = sig_summary.split("Frecuencia:", 1)[1].strip().split()[0]
+                if freq_part.isdigit():
+                    self._sig_freq_var.set(freq_part)
+        elif "[ESTADO]" in line:
             tag = "estado"
         elif "[ERROR]" in line:
             tag = "error"

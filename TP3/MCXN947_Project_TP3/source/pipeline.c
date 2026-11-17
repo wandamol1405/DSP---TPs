@@ -57,6 +57,7 @@ void pipeline_init(void) {
     processing_stage_init();
     dac_stage_init();
     uart_stage_init();
+    signal_gen_init();
 
     // La FFT corre en PendSV con la menor prioridad: la ISR del ADC (prioridad 0)
     // siempre puede interrumpirlo para no perder muestras.
@@ -82,7 +83,17 @@ void pipeline_step(void) {
 
     // Etapa 3: el DAC repite la entrada, para seguir viendo la señal en el osciloscopio
     // (el resultado de la FFT es un espectro, no una señal para sacar por el DAC)
-    dac_stage_write_sample(in_sample);
+    signal_source_t source = signal_gen_get_source();
+    q15_t sig_sample = 0;
+    if (source != SIGNAL_SOURCE_ADC) {
+        sig_sample = signal_gen_next_sample(adc_stage_get_sample_rate_hz(adc_stage_get_sample_rate()));
+    }
+    if ((source == SIGNAL_SOURCE_SYNTH) && adc_stage_is_running()) {
+        // SINTETICA (loopback digital): se leyó el ADC para vaciar su FIFO/flag pero se
+        // reemplaza la muestra de entrada por la señal generada internamente.
+        in_sample = sig_sample;
+    }
+    dac_stage_write_sample((source == SIGNAL_SOURCE_ADC) ? in_sample : sig_sample);
 
     uint32_t cur = s_cur;
     uint32_t idx = s_idx;
@@ -295,4 +306,34 @@ bool pipeline_take_peak_updated(void) {
     bool updated = s_peak_updated;
     s_peak_updated = false;
     return updated;
+}
+
+signal_source_t pipeline_next_signal_source(void) {
+    signal_source_t next = signal_gen_next_source();
+    s_idx = 0;
+    return next;
+}
+
+signal_waveform_t pipeline_next_signal_waveform(void) {
+    signal_waveform_t next = signal_gen_next_waveform();
+    s_idx = 0;
+    return next;
+}
+
+uint32_t pipeline_next_signal_tone(void) {
+    uint32_t freq_hz = signal_gen_next_tone();
+    s_idx = 0;
+    return freq_hz;
+}
+
+uint32_t pipeline_set_signal_freq_hz(uint32_t freq_hz) {
+    uint32_t applied = signal_gen_set_freq_hz(freq_hz);
+    s_idx = 0;
+    return applied;
+}
+
+uint32_t pipeline_step_signal_freq_hz(int32_t delta_hz) {
+    uint32_t applied = signal_gen_step_freq_hz(delta_hz);
+    s_idx = 0;
+    return applied;
 }
