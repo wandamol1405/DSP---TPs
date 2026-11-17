@@ -16,6 +16,7 @@
 #include "processing_stage.h" // etapa de procesamiento DSP
 #include "dac_stage.h"        // etapa de salida analógica (DAC0)
 #include "uart_stage.h"       // etapa de comunicación por UART (tramas binarias y comandos)
+#include "signal_gen.h"       // generador de señal interna configurable
 
 // Tamaño del buffer circular interno del pipeline, en muestras (según consigna del TP1).
 #define PIPELINE_BUFFER_SIZE 512
@@ -163,5 +164,32 @@ uint32_t pipeline_get_peak_frequency_hz(void);
  *        última consulta, y limpia la bandera.
  */
 bool pipeline_take_peak_updated(void);
+
+/**
+ * @brief Avanza a la siguiente fuente de señal interna (ADC -> DAC LOOPBACK -> SINTETICA)
+ *        y descarta la ventana en curso para no mezclar señales distintas.
+ */
+signal_source_t pipeline_next_signal_source(void);
+
+/**
+ * @brief Avanza a la siguiente forma de onda (SENO -> CUADRADA -> TRIANGULAR -> SIERRA)
+ *        y descarta la ventana en curso.
+ */
+signal_waveform_t pipeline_next_signal_waveform(void);
+
+/**
+ * @brief Avanza al siguiente tono predefinido del generador interno y descarta la ventana en curso.
+ */
+uint32_t pipeline_next_signal_tone(void);
+
+/**
+ * @brief Fija la frecuencia del generador interno en Hz y descarta la ventana en curso.
+ */
+uint32_t pipeline_set_signal_freq_hz(uint32_t freq_hz);
+
+/**
+ * @brief Ajusta la frecuencia del generador interno sumando delta_hz y descarta la ventana en curso.
+ */
+uint32_t pipeline_step_signal_freq_hz(int32_t delta_hz);
 
 #endif /* PIPELINE_H_ */

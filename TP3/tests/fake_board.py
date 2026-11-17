@@ -6,8 +6,8 @@ punta (puerto, hilo lector, parseo de tramas, gráficos en vivo, comandos).
 
 Abre un pseudo-terminal (pty): por el extremo "master" manda tramas
 sintéticas del protocolo binario (ver TP3/decisiones.md, "Formato de la trama"),
-un tono fijo configurable, alternando FFT/Bypass. La GUI se conecta al extremo
-"slave" como si fuera el puerto serie real de la placa.
+y responde a los comandos de la placa real, incluyendo el generador de señal interna.
+La GUI se conecta al extremo "slave" como si fuera el puerto serie real de la placa.
 
 Reacciona a los mismos comandos que el firmware y los botones de la GUI:
   m -> ciclo BYPASS -> FFT 512 -> FFT 1024 -> FFT 2048 -> BYPASS
@@ -15,6 +15,10 @@ Reacciona a los mismos comandos que el firmware y los botones de la GUI:
   r -> alterna RUN / STOP
   c -> continuo on/off
   s -> una trama más si está en pausa
+  g -> fuente de señal (ADC -> DAC LOOPBACK -> SINTETICA)
+  k -> forma de onda (SENO -> CUADRADA -> TRIANGULAR -> SIERRA)
+  w -> preset de frecuencia (250/1000/1004/3000/5000 Hz)
+  +/- -> +/- 1 Hz, [/] -> -/+ 10 Hz, <Hz>+Enter -> frecuencia arbitraria
   t -> imprime contadores y estado
   h -> imprime ayuda
 
@@ -52,8 +56,14 @@ MODES_CYCLE = [
     (FRAME_TYPE_FFT, 1024),
     (FRAME_TYPE_FFT, 2048),
 ]
+SOURCES = [
+    "ADC (generador externo)",
+    "DAC LOOPBACK (J1[4] -> J9[23])",
+    "SINTETICA (sin ADC)",
+]
+WAVEFORMS = ["SENO", "CUADRADA", "TRIANGULAR", "SIERRA"]
+TONE_PRESETS = [250, 1000, 1004, 3000, 5000]
 FRAME_PERIOD_S = 0.1  # 10 tramas/s
-COMMAND_CHARS = set("mfrcsth")
 
 
 def write_all(fd: int, data: bytes):
@@ -80,13 +90,17 @@ def encode_frame(type_, n, fs, payload) -> bytes:
 class FakeBoard:
     """Estado del firmware simulado: qué manda y cómo reacciona a comandos."""
 
-    def __init__(self, tone_hz: float, amplitude: float = 0.3):
-        self.tone_hz = tone_hz
+    def __init__(self, tone_hz: float, amplitude: float = 0.8):
+        self.tone_hz = int(max(1, min(50000, round(tone_hz))))
         self.amplitude = amplitude
         self.mode_idx = 2  # arranca en FFT 1024
         self.fs_idx = 0    # arranca en 8 kHz
+        self.source_idx = 0  # arranca en ADC
+        self.wave_idx = 0    # arranca en SENO
+        self.tone_preset_idx = 1
         self.running = True
         self.single_shot = False
+        self._freq_buf = ""
 
     @property
     def type(self) -> int:
@@ -100,42 +114,125 @@ class FakeBoard:
     def fs(self) -> int:
         return FS_CYCLE[self.fs_idx]
 
-    def handle_command(self, ch: str):
-        if ch == "m":
+    @property
+    def source_name(self) -> str:
+        return SOURCES[self.source_idx]
+
+    @property
+    def waveform_name(self) -> str:
+        return WAVEFORMS[self.wave_idx]
+
+    def sig_status_line(self) -> str:
+        return f"[SIG] Fuente: {self.source_name}  Onda: {self.waveform_name}  Frecuencia: {self.tone_hz} Hz"
+
+    def _clamp_freq(self, val: int) -> int:
+        return max(1, min(50000, val))
+
+    def feed_bytes(self, data: bytes) -> list[str]:
+        """Procesa bytes entrantes y devuelve líneas ASCII a enviar de vuelta por la UART."""
+        tx_lines: list[str] = []
+        for b in data:
+            ch = chr(b)
+            if "0" <= ch <= "9":
+                if len(self._freq_buf) < 6:
+                    self._freq_buf += ch
+                continue
+            if ch in ("\r", "\n"):
+                if self._freq_buf:
+                    val = int(self._freq_buf)
+                    self._freq_buf = ""
+                    if val > 0:
+                        self.tone_hz = self._clamp_freq(val)
+                        tx_lines.append(self.sig_status_line())
+                continue
+            self._freq_buf = ""
+            tx_lines.extend(self.handle_command(ch))
+        return tx_lines
+
+    def handle_command(self, ch: str) -> list[str]:
+        tx_lines: list[str] = []
+        c = ch.lower()
+        if c == "m":
             self.mode_idx = (self.mode_idx + 1) % len(MODES_CYCLE)
-        elif ch == "f":
+        elif c == "f":
             self.fs_idx = (self.fs_idx + 1) % len(FS_CYCLE)
-        elif ch == "r":
+        elif c == "r":
             self.running = not self.running
-        elif ch == "c":
+        elif c == "c":
             self.running = not self.running
-        elif ch == "s":
+        elif c == "s":
             self.single_shot = True
-        elif ch == "t":
-            print(f"[fake_board] Estado: Fs={self.fs} Hz, N={self.n}, modo={self.type}, running={self.running}")
-        elif ch == "h":
-            print("[fake_board] Comandos: m (modo), f (Fs), r (run/stop), c (continuo), s (single), t (estado), h (ayuda)")
+        elif c == "g":
+            self.source_idx = (self.source_idx + 1) % len(SOURCES)
+            tx_lines.append(self.sig_status_line())
+        elif c == "k":
+            self.wave_idx = (self.wave_idx + 1) % len(WAVEFORMS)
+            tx_lines.append(self.sig_status_line())
+        elif c == "w":
+            self.tone_preset_idx = (self.tone_preset_idx + 1) % len(TONE_PRESETS)
+            self.tone_hz = TONE_PRESETS[self.tone_preset_idx]
+            tx_lines.append(self.sig_status_line())
+        elif ch in ("+", "="):
+            self.tone_hz = self._clamp_freq(self.tone_hz + 1)
+            tx_lines.append(self.sig_status_line())
+        elif ch in ("-", "_"):
+            self.tone_hz = self._clamp_freq(self.tone_hz - 1)
+            tx_lines.append(self.sig_status_line())
+        elif ch in ("]", "}"):
+            self.tone_hz = self._clamp_freq(self.tone_hz + 10)
+            tx_lines.append(self.sig_status_line())
+        elif ch in ("[", "{"):
+            self.tone_hz = self._clamp_freq(self.tone_hz - 10)
+            tx_lines.append(self.sig_status_line())
+        elif c == "t":
+            tx_lines.append(
+                f"[ESTADO] {'RUN' if self.running else 'STOP'}  Fs={self.fs} Hz  "
+                f"Modo: {'FFT' if self.type == FRAME_TYPE_FFT else 'BYPASS'}  N={self.n}"
+            )
+            tx_lines.append(self.sig_status_line())
+        elif c in ("h", "?"):
+            tx_lines.append("[fake_board] Comandos: m, f, r, c, s, g, k, w, +/-, [/], <Hz>+Enter, t, h")
+        else:
+            return tx_lines
 
         type_name = "FFT" if self.type == FRAME_TYPE_FFT else "Bypass"
-        print(f"[fake_board] comando '{ch}' -> {type_name} fs={self.fs} n={self.n} running={self.running}")
+        print(
+            f"[fake_board] cmd '{ch}' -> {type_name} fs={self.fs} n={self.n} "
+            f"src={self.source_name} wave={self.waveform_name} f={self.tone_hz} Hz"
+        )
+        return tx_lines
+
+    def _generate_waveform(self, n: int, fs: int) -> np.ndarray:
+        phase = np.mod(np.arange(n) * (self.tone_hz / fs), 1.0)
+        wave = self.waveform_name
+        if wave == "CUADRADA":
+            sig = np.where(phase < 0.5, 1.0, -1.0)
+        elif wave == "TRIANGULAR":
+            # Fase alineada a 0 en t=0 con pendiente positiva
+            sig = 1.0 - 4.0 * np.abs(np.mod(phase + 0.75, 1.0) - 0.5)
+        elif wave == "SIERRA":
+            sig = 2.0 * phase - 1.0
+        else:  # SENO
+            sig = np.sin(2.0 * np.pi * phase)
+        return self.amplitude * sig
 
     def build_frame(self) -> bytes:
         n, fs = self.n, self.fs
-        t = np.arange(n) / fs
-        signal = self.amplitude * np.sin(2 * np.pi * self.tone_hz * t)
-        signal += np.random.normal(0, 0.01, n)  # ruido de piso
+        signal = self._generate_waveform(n, fs)
+        if self.source_idx != 2:  # ADC o DAC LOOPBACK tienen ruido analógico
+            signal = signal + np.random.normal(0, 0.003, n)
 
         if self.type == FRAME_TYPE_BYPASS:
             q15 = np.clip(signal * 32767, -32768, 32767).astype(np.int16)
             return encode_frame(FRAME_TYPE_BYPASS, n, fs, q15)
-        else:
-            w = np.ones(n)  # Rectangular según decisiones.md
-            spectrum = np.fft.rfft(signal * w)
-            mag = np.abs(spectrum) / max(np.sum(w) / 2.0, 1e-12)
-            length = n // 2
-            db = 20.0 * np.log10(np.maximum(mag[:length], 1e-12))
-            payload = np.clip(np.round(db * 100), -32768, 32767).astype(np.int16)
-            return encode_frame(FRAME_TYPE_FFT, n, fs, payload)
+
+        w = np.ones(n)  # Rectangular según decisiones.md
+        spectrum = np.fft.rfft(signal * w)
+        mag = np.abs(spectrum) / max(np.sum(w) / 2.0, 1e-12)
+        length = n // 2
+        db = 20.0 * np.log10(np.maximum(mag[:length], 1e-12))
+        payload = np.clip(np.round(db * 100), -32768, 32767).astype(np.int16)
+        return encode_frame(FRAME_TYPE_FFT, n, fs, payload)
 
 
 def main():
@@ -166,59 +263,11 @@ def main():
                     data = os.read(master_fd, 256)
                 except OSError:
                     break
-                for b in data:
-                    ch = chr(b)
-                    if ch in COMMAND_CHARS:
-                        board.handle_command(ch)
-
-            now = time.monotonic()
-            if now >= next_send:
-                next_send = now + FRAME_PERIOD_S
-                if board.running or board.single_shot:
-                    board.single_shot = False
+                for line in board.feed_bytes(data):
                     try:
-                        write_all(master_fd, board.build_frame())
+                        write_all(master_fd, (line + "\r\n").encode("ascii"))
                     except OSError:
                         break
-    except KeyboardInterrupt:
-        pass
-    finally:
-        os.close(master_fd)
-        os.close(slave_fd)
-
-
-if __name__ == "__main__":
-    main()
-    master_fd, slave_fd = pty.openpty()
-    # Modo raw en el extremo slave: sin esto, la disciplina de línea del
-    # pty hace eco de lo que se escribe en master_fd de vuelta hacia
-    # master_fd (como si fuera una terminal), y las tramas binarias que
-    # mandamos nosotros mismos "vuelven" pareciendo comandos entrantes.
-    tty.setraw(slave_fd)
-    slave_name = os.ttyname(slave_fd)
-
-    print(f"[fake_board] puerto simulado: {slave_name}")
-    print("[fake_board] pegalo en el combo 'Puerto' de la GUI y conectate")
-    print(f"[fake_board] tono de prueba: {tone_hz:.1f} Hz")
-    print("[fake_board] Ctrl+C para cortar\n")
-
-    board = FakeBoard(tone_hz=tone_hz)
-    next_send = time.monotonic()
-
-    try:
-        while True:
-            timeout = max(0.0, next_send - time.monotonic())
-            ready, _, _ = select.select([master_fd], [], [], timeout)
-
-            if master_fd in ready:
-                try:
-                    data = os.read(master_fd, 256)
-                except OSError:
-                    break
-                for b in data:
-                    ch = chr(b)
-                    if ch in COMMAND_CHARS:
-                        board.handle_command(ch)
 
             now = time.monotonic()
             if now >= next_send:

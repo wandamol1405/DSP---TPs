@@ -32,6 +32,7 @@ Uso:
 
 import dataclasses
 import queue
+import re
 import struct
 import threading
 import time
@@ -92,6 +93,19 @@ COMMANDS = {
     "Captura única": "s",
     "Estado / contadores": "t",
 }
+
+# Generador de señal interna del firmware (ver TP3/ejemplo_senal_interna.md)
+SIGGEN_CYCLE_COMMANDS = (
+    ("Fuente", "g", "ADC → DAC loopback → sintética"),
+    ("Onda", "k", "Seno → cuadrada → triangular → sierra"),
+    ("Preset", "w", "250 / 1000 / 1004 / 3000 / 5000 Hz"),
+)
+SIGGEN_STEP_COMMANDS = (("−10", "["), ("−1", "-"), ("+1", "+"), ("+10", "]"))
+SIGGEN_FREQ_RANGE = (1, 50000)
+SIG_LINE_RE = re.compile(r"Fuente:\s*(?P<src>.+?)\s+Onda:\s*(?P<wave>\S+)\s+Frecuencia:\s*(?P<freq>\d+)")
+
+HOTKEYS = set(COMMANDS.values()) | {c for _, c, _ in SIGGEN_CYCLE_COMMANDS} | \
+    {c for _, c in SIGGEN_STEP_COMMANDS}
 
 # --- Paleta: azul noche, acento azul/cian y detalles en amarillo ---
 BG = "#0b1220"              # Fondo de la ventana
@@ -333,8 +347,11 @@ class SerialWorker:
         self._ser = None
 
     def send_char(self, ch: str):
+        self.send_text(ch)
+
+    def send_text(self, text: str):
         if self.is_open:
-            self._ser.write(ch.encode("ascii", errors="ignore"))
+            self._ser.write(text.encode("ascii", errors="ignore"))
 
     def _read_loop(self):
         while not self._stop_event.is_set():
@@ -350,8 +367,8 @@ class FftGuiApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("TP3 DSP - Analizador de espectro FFT (FRDM-MCXN947)")
-        self.geometry("1280x880")
-        self.minsize(1040, 720)
+        self.geometry("1280x940")
+        self.minsize(1040, 860)
 
         self._font = _pick_tk_font(self, UI_FONTS, "TkDefaultFont")
         self._mono = _pick_tk_font(self, MONO_FONTS, "TkFixedFont")
@@ -385,6 +402,10 @@ class FftGuiApp(tk.Tk):
         self._cursor_info_var = tk.StringVar(value="Pasá el mouse sobre el espectro para medir")
         self._frame_info_var = tk.StringVar(value="Sin tramas")
         self._autoscroll_var = tk.BooleanVar(value=True)
+        self._sig_src_var = tk.StringVar(value="—")
+        self._sig_wave_var = tk.StringVar(value="—")
+        self._sig_freq_status_var = tk.StringVar(value="—")
+        self._sig_freq_var = tk.StringVar(value="1000")
 
         self._apply_theme()
         self._apply_mpl_theme()
@@ -441,6 +462,8 @@ class FftGuiApp(tk.Tk):
         self._button_style("Icon.TButton", SURFACE_ALT, ACCENT, SURFACE_HOVER, BORDER,
                            bold=True, padding=(9, 7))
         self._button_style("Small.TButton", SURFACE_ALT, FG, SURFACE_HOVER, BORDER, padding=(10, 4))
+        self._button_style("Step.TButton", SURFACE_ALT, YELLOW, SURFACE_HOVER, BORDER,
+                           bold=True, padding=(8, 4))
         style.configure("Cmd.TButton", anchor="w")
         self._button_style("Cmd.TButton", SURFACE_ALT, FG, SURFACE_HOVER, BORDER, padding=(12, 7))
         style.configure("Cmd.TButton", anchor="w")
@@ -545,9 +568,10 @@ class FftGuiApp(tk.Tk):
         main = ttk.Frame(body)
         main.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._build_info_panel(main)
+        self._build_siggen_panel(main)
 
         notebook = ttk.Notebook(main)
-        notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(12, 0))
+        notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(10, 0))
         self._notebook = notebook
         self._build_fft_tab(notebook)
         self._build_bypass_tab(notebook)
@@ -692,6 +716,64 @@ class FftGuiApp(tk.Tk):
         for col in range(cols):
             grid.columnconfigure(col, weight=1, uniform="kpi")
 
+    def _build_siggen_panel(self, parent):
+        """Controles del generador de señal interna de la placa (g, k, w, +/-, [/], Hz+Enter)."""
+        card = tk.Frame(parent, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+        card.pack(side=tk.TOP, fill=tk.X, pady=(10, 0))
+        tk.Frame(card, bg=YELLOW, width=3).pack(side=tk.LEFT, fill=tk.Y)
+        body = tk.Frame(card, bg=SURFACE)
+        body.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=12, pady=10)
+
+        # Fila 1: título + estado actual informado por la placa ([SIG] ...)
+        top = tk.Frame(body, bg=SURFACE)
+        top.pack(fill=tk.X)
+        tk.Label(top, text="GENERADOR DE SEÑAL INTERNA", bg=SURFACE, fg=ACCENT,
+                 font=self._f(8, "bold")).pack(side=tk.LEFT)
+        chips = tk.Frame(top, bg=SURFACE)
+        chips.pack(side=tk.RIGHT)
+        for title, var, color in (("Fuente", self._sig_src_var, FG),
+                                  ("Onda", self._sig_wave_var, FG),
+                                  ("Frecuencia", self._sig_freq_status_var, YELLOW)):
+            chip = tk.Frame(chips, bg=SURFACE_ALT, highlightthickness=1, highlightbackground=BORDER)
+            chip.pack(side=tk.LEFT, padx=(8, 0))
+            tk.Label(chip, text=title.upper(), bg=SURFACE_ALT, fg=MUTED,
+                     font=self._f(7, "bold")).pack(side=tk.LEFT, padx=(8, 6), pady=3)
+            tk.Label(chip, textvariable=var, bg=SURFACE_ALT, fg=color,
+                     font=self._f(9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+
+        # Fila 2: controles. El campo Hz + "Fijar" se empaqueta primero para que
+        # nunca quede aplastado si la ventana es angosta.
+        ctl = tk.Frame(body, bg=SURFACE)
+        ctl.pack(fill=tk.X, pady=(8, 0))
+
+        # Grupo de frecuencia a la derecha:  −10 −1 [ Hz ] +1 +10  Hz  Fijar
+        def step_btn(label, ch):
+            return ttk.Button(ctl, text=label, style="Step.TButton", width=-1,
+                              command=lambda: self._send(ch))
+        steps = dict((c, lbl) for lbl, c in SIGGEN_STEP_COMMANDS)
+        ttk.Button(ctl, text="Fijar", style="Primary.TButton", width=-1,
+                   command=self._send_custom_freq).pack(side=tk.RIGHT)
+        tk.Label(ctl, text="Hz", bg=SURFACE, fg=MUTED, font=self._f(9)).pack(side=tk.RIGHT, padx=(6, 8))
+        step_btn(steps["]"], "]").pack(side=tk.RIGHT)
+        step_btn(steps["+"], "+").pack(side=tk.RIGHT, padx=(4, 4))
+        self._sig_freq_entry = tk.Entry(
+            ctl, textvariable=self._sig_freq_var, width=6, justify=tk.CENTER,
+            bg=SURFACE_ALT, fg=YELLOW, insertbackground=YELLOW, relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT,
+            font=(self._mono, 11, "bold"))
+        self._sig_freq_entry.pack(side=tk.RIGHT, ipady=4)
+        self._sig_freq_entry.bind("<Return>", lambda _e: self._send_custom_freq())
+        self._sig_freq_entry.bind("<KP_Enter>", lambda _e: self._send_custom_freq())
+        self._sig_freq_entry.bind("<Escape>", lambda _e: self.focus_set())
+        step_btn(steps["-"], "-").pack(side=tk.RIGHT, padx=(4, 4))
+        step_btn(steps["["], "[").pack(side=tk.RIGHT)
+
+        # Ciclos (fuente, onda, preset) a la izquierda
+        for label, ch, _hint in SIGGEN_CYCLE_COMMANDS:
+            ttk.Button(ctl, text=label, style="Small.TButton", width=-1,
+                       command=lambda c=ch: self._send(c)).pack(side=tk.LEFT)
+            self._key_badge(ctl, ch.upper()).pack(side=tk.LEFT, padx=(4, 10))
+
     def _build_statusbar(self):
         bar = tk.Frame(self, bg=SURFACE)
         bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -716,6 +798,8 @@ class FftGuiApp(tk.Tk):
         widget = canvas.get_tk_widget()
         widget.configure(bg=SURFACE, highlightthickness=0)
         widget.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        # add="+" para no pisar los bindings de mouse de matplotlib
+        widget.bind("<Button-1>", lambda _e: widget.winfo_toplevel().focus_set(), add="+")
 
         def _relayout(_event):
             try:
@@ -836,9 +920,10 @@ class FftGuiApp(tk.Tk):
 
         self._log_text.tag_configure("estado", foreground=ACCENT, font=(self._mono, 9, "bold"))
         self._log_text.tag_configure("info", foreground="#4ade80")
-        self._log_text.tag_configure("warn", foreground=YELLOW)
+        self._log_text.tag_configure("sig", foreground=YELLOW, font=(self._mono, 9, "bold"))
+        self._log_text.tag_configure("warn", foreground="#fb923c")
         self._log_text.tag_configure("error", foreground="#f87171", font=(self._mono, 9, "bold"))
-        self._log_text.tag_configure("export", foreground="#fde68a")
+        self._log_text.tag_configure("export", foreground="#c4b5fd")
         self._log_text.tag_configure("normal", foreground=FG)
 
     # -------------------------------------------------------------- serial
@@ -892,6 +977,35 @@ class FftGuiApp(tk.Tk):
             self._worker.send_char(ch)
         except serial.SerialException as exc:
             self._log(f"[ERROR] No se pudo enviar '{ch}': {exc}")
+
+    def _send_custom_freq(self):
+        lo, hi = SIGGEN_FREQ_RANGE
+        try:
+            freq = int(self._sig_freq_var.get().strip())
+        except ValueError:
+            messagebox.showwarning("Frecuencia inválida", f"Ingresá un número entero en Hz ({lo} a {hi}).")
+            return
+        if not lo <= freq <= hi:
+            messagebox.showwarning("Frecuencia fuera de rango", f"La frecuencia debe estar entre {lo} y {hi} Hz.")
+            return
+        if not self._worker.is_open:
+            messagebox.showwarning("Sin conexión", "Conectate a un puerto serie primero.")
+            return
+        try:
+            self._worker.send_text(f"{freq}\n")  # el firmware acepta <Hz>+Enter
+        except serial.SerialException as exc:
+            self._log(f"[ERROR] No se pudo enviar la frecuencia: {exc}")
+        self.focus_set()
+
+    def _update_siggen_status(self, line: str):
+        m = SIG_LINE_RE.search(line)
+        if not m:
+            return
+        self._sig_src_var.set(m["src"].strip())
+        self._sig_wave_var.set(m["wave"].capitalize())
+        self._sig_freq_status_var.set(f"{int(m['freq'])} Hz")
+        if self.focus_get() is not self._sig_freq_entry:
+            self._sig_freq_var.set(m["freq"])
 
     def _on_close(self):
         self._worker.disconnect()
@@ -949,7 +1063,7 @@ class FftGuiApp(tk.Tk):
         if isinstance(event.widget, (ttk.Combobox, ttk.Entry, tk.Entry, tk.Text)):
             return
         ch = event.char.lower()
-        if ch and ch in COMMANDS.values():
+        if ch and ch in HOTKEYS:
             self._send(ch)
         elif event.keysym == "space":
             self._toggle_pause()
@@ -1061,7 +1175,10 @@ class FftGuiApp(tk.Tk):
 
     def _log(self, line: str):
         tag = "normal"
-        if "[ESTADO]" in line:
+        if "[SIG]" in line:
+            tag = "sig"
+            self._update_siggen_status(line)
+        elif "[ESTADO]" in line:
             tag = "estado"
         elif "[ERROR]" in line:
             tag = "error"
